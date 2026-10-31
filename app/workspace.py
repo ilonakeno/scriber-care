@@ -57,7 +57,9 @@ def match_route(ws: dict, text: str, model_route: str | None) -> tuple[dict | No
     picked another category. Returns (route, why)."""
     low = text.lower()
     for r in ws.get("routes", []):
-        hit = next((k for k in r.get("keywords", []) if k and k.lower() in low), None)
+        # A keyword matches only at the start of a word, so "dpa" is not found inside another word.
+        hit = next((k for k in r.get("keywords", [])
+                    if k and re.search(rf"(?<!\w){re.escape(k.lower())}", low)), None)
         if hit:
             return r, f"слово-тригер «{hit}»"
     for r in ws.get("routes", []):

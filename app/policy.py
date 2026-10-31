@@ -46,25 +46,39 @@ CATALOG: dict[str, ActionSpec] = {
 
 ALWAYS_ALLOWED_IN_P0 = {"acknowledge", "escalate_to_human", "lookup_account", "read_feature_docs"}
 
+PATIENT = r"(пацієнт|хвор|patient)"
+WRONG = r"(помилк|неправильн|не\s+(той|та|те|ті)\b)"
+GONE = r"(вже|уже)\s+(пішл|поїхал|вдома|додому)"
+
+# Ukrainian and English: customers write in both, and a rephrased threat must still reach a human.
 RISK_PATTERNS: dict[str, list[str]] = {
     "legal_threat": [
-        r"\bсуд\w*", r"юрист", r"адвокат", r"позов", r"регулятор", r"чарджбек", r"chargeback",
+        r"\bсуд\b", r"\bсуд(у|ом|і)\b", r"судитис\w*", r"судов\w*",  # not "судин" (vascular ultrasound)
+        r"юрист", r"адвокат", r"позов", r"регулятор", r"чарджбек", r"chargeback",
         r"оскарж\w*\s+(платіж|списання|оплату)", r"через\s+банк", r"\bв\s+банк\b", r"поліці",
+        r"lawyer", r"attorney", r"\bsue\b", r"lawsuit", r"\bcourt\b", r"dispute\s+(the\s+)?(charge|payment)",
     ],
     "patient_data": [
-        r"(видал|стер|знищ|передай|надішл|покаж|вивантаж)\w*.{0,60}(дан\w*|запис\w*|протокол\w*).{0,40}пацієнт",
-        r"пацієнт\w*.{0,60}(видал|стер|знищ)\w*",
-        r"(персональн|медичн)\w*\s+дан\w*\s+пацієнт",
+        rf"(видал|стер|знищ|передай|передат|надішл|покаж|вивантаж)\w*.{{0,60}}(дан\w*|запис\w*|протокол\w*|карт\w*).{{0,40}}{PATIENT}",
+        rf"{PATIENT}\w*.{{0,60}}(видал|стер|знищ)\w*",
+        rf"(персональн|медичн)\w*\s+(дан\w*|карт\w*)\s+{PATIENT}",
+        r"(delete|erase|remove|send|share|export)\w*.{0,60}(data|records?|reports?|files?).{0,40}patient",
     ],
     "clinical_risk": [
-        r"(вже|уже)\s+(віддал|видал|роздрукува|надісла|переда)\w*.{0,40}пацієнт",
-        r"пацієнт\w*.{0,40}(вже|уже)\s+(отрима|забра|має)\w*.{0,40}(помилк|неправильн)",
+        rf"(вже|уже)\s+(віддал|видал|роздрукува|надісла|переда)\w*.{{0,40}}{PATIENT}",
+        rf"{PATIENT}\w*.{{0,40}}(вже|уже)\s+(отрима|забра|має)\w*.{{0,40}}(помилк|неправильн)",
         r"помилк\w*.{0,30}(діагноз|висновк)",
+        rf"{GONE}\w*.{{0,60}}{WRONG}", rf"{WRONG}\w*.{{0,60}}{GONE}",
+        r"(wrong|incorrect|mistake|error)\w*.{0,60}already.{0,40}(patient|given|printed|sent|home)",
+        r"patient\w*.{0,40}already.{0,40}(wrong|incorrect|mistake|error)",
     ],
     # Text that tries to steer the assistant itself: never acted on, always reviewed by a human.
     "prompt_injection": [
-        r"ігнору\w*.{0,30}(інструкц|правил|вказівк)", r"ignore\s+(all\s+)?(previous|prior)",
-        r"ти\s+тепер\s+\w+", r"system\s*prompt", r"you\s+are\s+now",
+        r"(ігнору|забудь|не\s+зважай)\w*.{0,30}(інструкц|правил|вказівк|обмежен)",
+        r"ignore\s+(all\s+)?(previous|prior)",
+        r"(ignore|disregard|forget)\s+(all\s+|your\s+|the\s+)?(previous\s+|prior\s+|above\s+)?(instructions|rules)",
+        r"ти\s+тепер\s+\w+", r"(поводься|дій)\s+як\s+(адмін|розробник|систем)",
+        r"system\s*prompt", r"you\s+are\s+now",
     ],
 }
 

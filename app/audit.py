@@ -15,6 +15,9 @@ def _digest(prev_hash: str, ts: str, case_id, event: str, data_json: str) -> str
 
 
 def log(conn: sqlite3.Connection, event: str, data: dict, case_id: int | None = None) -> str:
+    if not conn.in_transaction:
+        # Take the write lock before reading the head of the chain, so parallel requests can't fork it.
+        conn.execute("BEGIN IMMEDIATE")
     last = conn.execute("SELECT hash FROM audit ORDER BY id DESC LIMIT 1").fetchone()
     prev = last["hash"] if last else GENESIS
     ts = now_iso()

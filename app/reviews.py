@@ -6,7 +6,7 @@ import sqlite3
 from . import ai, audit, config
 from .db import now_iso, row, rows
 from .integrations import notify
-from .masking import find_leaks
+from .masking import find_leaks, mask
 from .policy import Context, Proposed, Settings, evaluate
 from .support import _record, case_link
 
@@ -62,7 +62,7 @@ def daily_pass(conn: sqlite3.Connection) -> dict:
         candidate = match_reviewer(conn, review)
         cur = conn.execute("INSERT INTO cases (channel, doctor_id, review_id, text, masked_text, created_at, status) "
                            "VALUES ('review', NULL, ?, ?, ?, ?, 'new')",
-                           (review["id"], review["text"], review["text"], now_iso()))
+                           (review["id"], review["text"], mask(review["text"]).text, now_iso()))
         case_id = cur.lastrowid
         invite = f"{config.PUBLIC_BASE_URL}/chat?case={case_id}"
         reply = (res["reply_draft"] or "Дякуємо за відгук! Напишіть нам у чат підтримки, і ми допоможемо.")

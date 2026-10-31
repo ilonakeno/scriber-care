@@ -10,6 +10,7 @@ import time
 
 from . import config
 from .db import connect, now_iso
+from .masking import mask
 from .policy import LEVELS
 
 VERDICTS = ["bug", "not_bug", "feature_request", "account_billing"]
@@ -95,10 +96,14 @@ Rules:
    hands the case to the responsible person.
 9. CONTEXT.recent_events are this customer's product logs. Use them to confirm the cause and cite
    them in evidence (for example an error a few minutes before the message).
-10. If information is missing and no safe action fits, ask exactly one question in
+10. CONTEXT.previous_cases are this customer's earlier cases from the last 7 days, newest first.
+    If the newest one has our_question, this message is most likely the answer: continue that case
+    instead of starting over, and never ask the same question again. The same problem again means
+    repeat_contact is true and the apology must be more concrete.
+11. If information is missing and no safe action fits, ask exactly one question in
     "clarifying_question" and use it as reply_now.
-11. "evidence" lists facts from CONTEXT only. "confidence" is 0..1 for your whole analysis.
-12. Follow BUSINESS.instructions.
+12. "evidence" lists facts from CONTEXT only. "confidence" is 0..1 for your whole analysis.
+13. Follow BUSINESS.instructions.
 
 Return ONLY one JSON object with this shape:
 """
@@ -237,11 +242,11 @@ def analyze(conn: sqlite3.Connection, masked_text: str, context: dict, knowledge
 def _emotion(text: str) -> tuple[dict, bool]:
     words = re.findall(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]{4,}", text)
     caps = sum(1 for w in words if w.isupper()) / max(len(words), 1)
-    angry = caps > 0.3 or "!!!" in text or re.search(r"дратує|не можу так|жах|обурен|скільки можна", text.lower())
+    angry = caps > 0.3 or "!!!" in text or re.search(r"не можу так|жах|обурен|скільки можна", text.lower())
     repeat = bool(re.search(r"втретє|третій раз|знову|вже писал|вкотре", text.lower()))
     if angry:
         return {"type": "anger", "intensity": 0.85 if caps > 0.3 else 0.65}, repeat
-    if repeat:
+    if repeat or "дратує" in text.lower():  # irritation is frustration, not anger: no compensation by itself
         return {"type": "frustration", "intensity": 0.5}, repeat
     if re.search(r"що мені робити|що робити|допоможіть", text.lower()):
         return {"type": "anxiety", "intensity": 0.5}, repeat
@@ -340,10 +345,6 @@ def heuristic_analyze(text: str, context: dict) -> dict:
         act("resend_export", "надіслати версію без форматування", format="txt")
         out["reply_now"] = (f"{hello}деякі МІС не приймають форматування Word. Ми надіслали вам протокол "
                             "простим текстом, його можна вставити без поломок.")
-    elif re.search(r"шаблон|можна зробити|хотілося б", low):
-        out.update(category="feature_request", feature="protocol-generation", verdict="feature_request",
-                   real_goal="структурований шаблон з вибором опцій")
-        out["reply_now"] = f"{hello}дякуємо, записали це як запит на нову можливість і передали команді."
     elif re.search(r"кнопк|експорт", low):
         out.update(category="export_missing", feature="export", verdict="not_bug", confidence=0.65,
                    real_goal="знайти, як експортувати протокол",
@@ -375,7 +376,7 @@ Return ONLY a JSON array:
 
 
 def analyze_reviews(conn: sqlite3.Connection, reviews: list[dict], context: dict) -> tuple[list[dict], str]:
-    payload = [{"id": r["id"], "product": r["product"], "rating": r["rating"], "text": _escape(r["text"])}
+    payload = [{"id": r["id"], "product": r["product"], "rating": r["rating"], "text": _escape(mask(r["text"]).text)}
                for r in reviews]
     prompt = (f"{REVIEW_INSTRUCTIONS}{REVIEW_SCHEMA}\n\nCONTEXT:\n{json.dumps(context, ensure_ascii=False)}\n\n"
               f"<untrusted>\n{json.dumps(payload, ensure_ascii=False, indent=1)}\n</untrusted>\n")

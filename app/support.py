@@ -62,7 +62,25 @@ def build_context(conn: sqlite3.Connection, case: dict) -> dict:
         e["message"] = mask(e["message"]).text
     return {"channel": case["channel"], **snapshot,
             "term_edits_7d": actions.term_edits(conn, case["doctor_id"]),
-            "recent_events": events, "open_incidents": incidents}
+            "recent_events": events, "open_incidents": incidents,
+            "previous_cases": previous_cases(conn, case)}
+
+
+def previous_cases(conn: sqlite3.Connection, case: dict) -> list[dict]:
+    """This customer's earlier cases from the last 7 days, newest first, so a follow-up or an answer
+    to our clarifying question continues the conversation instead of starting from scratch."""
+    earlier = rows(conn, "SELECT id, masked_text, status, analysis FROM cases WHERE doctor_id = ? AND id < ? "
+                         "AND channel = 'chat' AND status != 'new' AND created_at >= datetime('now', '-7 days') "
+                         "ORDER BY id DESC LIMIT 3", (case["doctor_id"], case["id"]))
+    history = []
+    for c in earlier:
+        a = json.loads(c["analysis"] or "{}")
+        last = row(conn, "SELECT text FROM messages WHERE case_id = ? AND sender != 'client' ORDER BY id DESC LIMIT 1",
+                   (c["id"],))
+        history.append({"message": c["masked_text"], "real_goal": a.get("real_goal"), "status": c["status"],
+                        "our_question": a.get("clarifying_question"),
+                        "our_last_reply": mask(last["text"]).text if last else None})
+    return history
 
 
 def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
@@ -84,6 +102,8 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
     analysis = ai.analyze(conn, masked.text, context, knowledge, workspace.prompt_block(ws), ws.get("connector", "none"))
     if analysis["injection_suspected"] and "prompt_injection" not in flags:
         flags.append("prompt_injection")
+    if context["previous_cases"]:
+        analysis["repeat_contact"] = True  # from the case history, not guessed from the wording
     route, route_why = workspace.match_route(ws, case["text"], analysis.get("route"))
     owner = workspace.member(ws, route["owner"]) if route else None
     analysis["route"] = {"id": route["id"], "title": route["title"], "mode": route["mode"], "why": route_why,
@@ -94,11 +114,17 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
     first_name = doctor.get("first_name")
 
     wants_human = any(a["action"] == "escalate_to_human" for a in analysis["proposed_actions"])
-    if route and not flags and (route["mode"] == "human_only" or wants_human):
+    unsure = analysis["confidence"] < autonomy(conn).low_confidence
+    # A P0 from the model, or an unsure model asking for a human, is an alarm, not a routine hand-over:
+    # the model can raise a case to P0, and no route can lower it.
+    model_p0 = analysis["priority"] == "P0" or (wants_human and unsure)
+    if route and not flags and not model_p0 and (route["mode"] == "human_only" or wants_human):
         # No risk flags: "needs a human" means the owner from the template, not a P0 alarm.
         return _hand_to_owner(conn, case, masked.text, analysis, route, owner, first_name)
 
-    open_incident = row(conn, "SELECT id FROM incidents WHERE status = 'open' LIMIT 1")
+    # Only an open incident on the same feature already has a ticket; an unrelated bug still gets its own.
+    open_incident = row(conn, "SELECT id FROM incidents WHERE status = 'open' AND feature = ? LIMIT 1",
+                        (analysis["feature"],))
     plan = [Proposed(a["action"], a["params"], a["why"]) for a in analysis["proposed_actions"]
             if not (a["action"] == "create_bug_ticket" and open_incident)]  # the incident already has a ticket
     ai_priority = analysis["priority"]

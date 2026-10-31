@@ -23,7 +23,7 @@
 <script src="/static/common.js"></script>
 <script>
 document.getElementById("hdr").innerHTML = header("chat");
-let caseId = new URLSearchParams(location.search).get("case");
+let caseIds = (new URLSearchParams(location.search).get("case") || "").split(",").filter(Boolean);
 
 async function init() {
   const doctors = await api("/api/doctors");
@@ -31,12 +31,14 @@ async function init() {
     `<option value="${d.id}">${esc(d.name)} · ${esc(d.clinic || "індивідуально")}</option>`).join("")
     + `<option value="">Гість без акаунта</option>`;
   renderStatus();
-  if (caseId) load();
+  if (caseIds.length) load();
 }
 
 async function load() {
-  if (!caseId) return;
-  const data = await api(`/api/chat/${caseId}`);
+  if (!caseIds.length) return;
+  // Each message is its own case; the whole conversation stays on screen and in the AI context.
+  const threads = await Promise.all(caseIds.map((id) => api(`/api/chat/${id}`)));
+  const data = { case: threads[threads.length - 1].case, messages: threads.flatMap((t) => t.messages) };
   if (data.case.doctor_id) document.getElementById("doctor").value = data.case.doctor_id;
   document.getElementById("msgs").innerHTML = data.messages.map((m) =>
     `<div class="msg ${m.sender === "client" ? "me" : "them"}"><div class="who">${m.sender === "client" ? "Ви" : "Підтримка"} · ${m.ts.slice(11, 16)}</div>${esc(m.text)}</div>`).join("");
@@ -50,10 +52,15 @@ document.getElementById("send").onclick = async (e) => {
   document.getElementById("text").value = "";
   try {
     const res = await api("/api/chat", { doctor_id: document.getElementById("doctor").value, text });
-    caseId = res.case_id;
-    history.replaceState(null, "", `/chat?case=${caseId}`);
+    caseIds.push(String(res.case_id));
+    history.replaceState(null, "", `/chat?case=${caseIds.join(",")}`);
     await load();
   } finally { e.target.disabled = false; }
+};
+document.getElementById("doctor").onchange = () => {  // another customer starts another conversation
+  caseIds = [];
+  document.getElementById("msgs").innerHTML = "";
+  history.replaceState(null, "", "/chat");
 };
 init();
 setInterval(load, 3000);
