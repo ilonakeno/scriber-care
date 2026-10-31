@@ -55,7 +55,8 @@ def _record(conn, case_id, action, params, why, outcome, rule, status, result=No
 def build_context(conn: sqlite3.Connection, case: dict) -> dict:
     snapshot = actions.account_snapshot(conn, case["doctor_id"])
     incidents = rows(conn, "SELECT title, doctors FROM incidents WHERE status = 'open'")
-    events = rows(conn, "SELECT ts, level, source, message FROM events WHERE account_id = ? "
+    # No timestamps in the prompt: identical cases then hit the response cache after a demo reset.
+    events = rows(conn, "SELECT level, source, message FROM events WHERE account_id = ? "
                         "ORDER BY ts DESC LIMIT 8", (case["doctor_id"],))
     for e in events:
         e["message"] = mask(e["message"]).text
