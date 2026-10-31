@@ -8,7 +8,7 @@ const api = async (path, body) => {
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const VERDICT = { bug: "баг", not_bug: "не баг", feature_request: "запит фічі", account_billing: "акаунт / оплата" };
 const STATUS = { new: "нове", resolved: "вирішено", waiting_approval: "чекає підтвердження", escalated: "у людини",
-  waiting_client: "чекає клієнта", assigned: "у відповідального", executed: "виконано", pending: "чекає", blocked: "заблоковано",
+  waiting_client: "чекає клієнта", needs_reply: "чекає відповіді агента", running: "виконується", assigned: "у відповідального", executed: "виконано", pending: "чекає", blocked: "заблоковано",
   rejected: "відхилено правилами", declined: "відхилено людиною" };
 const EMOTION = { anger: "злість", frustration: "роздратування", anxiety: "тривога", neutral: "нейтрально", satisfaction: "задоволення" };
 const CHANNEL = { chat: "чат", review: "відгук", incident: "інцидент", proactive: "проактивно" };

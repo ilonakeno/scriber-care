@@ -90,7 +90,7 @@ def account_snapshot(conn: sqlite3.Connection, doctor_id: str | None) -> dict:
     invoice = row(conn, "SELECT * FROM invoices WHERE account_id = ? ORDER BY period DESC LIMIT 1",
                   (doctor["clinic_id"] or doctor_id,))
     own_invoice = row(conn, "SELECT * FROM invoices WHERE account_id = ? ORDER BY period DESC LIMIT 1", (doctor_id,))
-    recent_credit = row(conn, "SELECT id FROM credits WHERE account_id = ? AND ts >= datetime('now', '-30 days')",
+    recent_credit = row(conn, "SELECT id FROM credits WHERE account_id = ? AND ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 days')",
                         (doctor_id,))
     return {
         "doctor": {"first_name": doctor["name"].split()[0], "specialty": doctor["specialty"],
@@ -105,5 +105,5 @@ def account_snapshot(conn: sqlite3.Connection, doctor_id: str | None) -> dict:
 
 def term_edits(conn: sqlite3.Connection, doctor_id: str | None) -> list[dict]:
     return rows(conn, "SELECT before, after, COUNT(*) AS count FROM term_edits WHERE doctor_id = ? "
-                      "AND ts >= datetime('now', '-7 days') GROUP BY before, after ORDER BY count DESC",
+                      "AND ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days') GROUP BY before, after ORDER BY count DESC",
                 (doctor_id,))

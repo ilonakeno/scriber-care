@@ -163,6 +163,8 @@ def list_cases(conn=Depends(db)):
             item["bucket"], item["label"] = "human", f"Потрібна людина: {reasons}"
         elif item["status"] == "waiting_approval":
             item["bucket"], item["label"] = "human", "AI підготував рішення, чекає підтвердження"
+        elif item["status"] == "needs_reply":
+            item["bucket"], item["label"] = "human", "Дію відхилено, відповідь клієнту пише людина"
         elif item["status"] == "waiting_client":
             item["bucket"], item["label"] = "human", "AI поставив уточнювальне питання"
         elif item["id"] in approved or item["id"] in by_agent:

@@ -70,7 +70,7 @@ def previous_cases(conn: sqlite3.Connection, case: dict) -> list[dict]:
     """This customer's earlier cases from the last 7 days, newest first, so a follow-up or an answer
     to our clarifying question continues the conversation instead of starting from scratch."""
     earlier = rows(conn, "SELECT id, masked_text, status, analysis FROM cases WHERE doctor_id = ? AND id < ? "
-                         "AND channel = 'chat' AND status != 'new' AND created_at >= datetime('now', '-7 days') "
+                         "AND channel = 'chat' AND status != 'new' AND created_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days') "
                          "ORDER BY id DESC LIMIT 3", (case["doctor_id"], case["id"]))
     history = []
     for c in earlier:
@@ -136,24 +136,36 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
                          recent_credit=bool(context.get("recent_credit")))
     priority, decisions = evaluate(plan, policy_ctx, autonomy(conn))
 
-    pending = []
+    pending, rerouted = [], False
     for d in decisions:
         if route and route["mode"] == "ai_with_approval" and d.outcome == "auto" and d.action not in READ_ONLY:
             d.outcome, d.rule = "approval", f"маршрут «{route['title']}»: AI готує, людина підтверджує"
             d.approver = "agent"
+            rerouted = True
         status = STATUS_BY_OUTCOME[d.outcome]
         result = _run(conn, case, d.action, d.params) if d.outcome == "auto" else None
         _record(conn, case_id, d.action, d.params, d.why, d.outcome, d.rule, status, result)
         if status == "pending":
             pending.append(CATALOG[d.action].title)
 
+    # The model wrote its reply before the rules ran. If the rules refused an action, or a route turned an
+    # automatic action into one that waits, the reply may promise what did not happen: a human checks it first.
+    refused = [d.action for d in decisions if d.outcome == "rejected"]
+    hold = (f"правила відхилили дію ({', '.join(refused)}), а відповідь могла її пообіцяти" if refused else
+            f"маршрут «{route['title']}»: дії ще чекають підтвердження" if rerouted else None)
     reply = (f"{first_name}, {HOLDING_REPLY[0].lower()}{HOLDING_REPLY[1:]}" if first_name else HOLDING_REPLY) \
         if priority == "P0" else analysis["reply_now"]
     if case["channel"] == "chat" and reply:
-        if _send_or_hold(conn, case_id, reply, ws, analysis):
+        if _send_or_hold(conn, case_id, reply, ws, analysis, None if priority == "P0" else hold):
             pending.append(CATALOG["send_reply"].title)
+    # Money the autonomy slider already moved: the "after approval" reply is true now, so it goes now.
+    auto_money = any(d.level == "P2" and d.outcome == "auto" for d in decisions)
+    if case["channel"] == "chat" and not pending and not refused and auto_money and analysis["reply_after_approval"]:
+        if not _send_or_hold(conn, case_id, analysis["reply_after_approval"], ws, analysis):
+            analysis["reply_after_approval"] = ""
 
     status = ("escalated" if priority == "P0" else "waiting_approval" if pending
+              else "needs_reply" if refused
               else "waiting_client" if analysis["clarifying_question"] else "resolved")
     _save(conn, case_id, masked.text, analysis, priority, status, route, owner)
 
@@ -166,6 +178,9 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
         notify(conn, "support", f"🟠 P2 · Кейс {case_id} · {analysis['real_goal'][:90]} · "
                                 f"ризик відтоку: {analysis['churn_risk']} · підтвердити: {', '.join(pending)}",
                case_link(case_id))
+    elif status == "needs_reply":
+        notify(conn, "support", f"✋ Кейс {case_id} · правила відхилили запропоновану дію · "
+                                f"відповідь клієнту пише людина", case_link(case_id))
     if scriber and (analysis["category"] == "stt_term_error" or context.get("term_edits_7d")):
         check_term_incidents(conn, case_id)
     return analysis
@@ -195,16 +210,18 @@ def _save(conn, case_id, masked_text, analysis, priority, status, route, owner) 
               case_id)
 
 
-def _send_or_hold(conn, case_id: int, reply: str, ws: dict, analysis: dict) -> bool:
-    """Sends the reply unless it breaks the business tone rules; then it waits for a human.
-    Returns True when the reply was held back."""
+def _send_or_hold(conn, case_id: int, reply: str, ws: dict, analysis: dict, hold: str | None = None) -> bool:
+    """Sends the reply unless it breaks the business tone rules or there is another reason to hold it;
+    then it waits for a human. Returns True when the reply was held back."""
     issues = workspace.tone_issues(ws, reply)
     analysis["tone_issues"] = issues
-    if not issues:
+    if not issues and not hold:
         add_message(conn, case_id, "ai", reply)
         return False
-    _record(conn, case_id, "send_reply", {"text": reply}, f"заборонені фрази: {', '.join(issues)}",
-            "approval", "тон: відповідь не пройшла перевірку, потрібна людина", "pending")
+    why = f"заборонені фрази: {', '.join(issues)}" if issues else hold
+    rule = ("тон: відповідь не пройшла перевірку, потрібна людина" if issues
+            else "відповідь не збігається з тим, що виконано: потрібна людина")
+    _record(conn, case_id, "send_reply", {"text": reply}, why, "approval", rule, "pending")
     return True
 
 
@@ -248,6 +265,21 @@ def _finish_if_done(conn: sqlite3.Connection, case_id: int) -> None:
         return
     case = row(conn, "SELECT * FROM cases WHERE id = ?", (case_id,))
     analysis = json.loads(case["analysis"] or "{}")
+    refused = row(conn, "SELECT id FROM actions WHERE case_id = ? AND status IN ('declined', 'rejected') LIMIT 1",
+                  (case_id,))
+    if case["channel"] == "chat" and refused:
+        # A human or the rules said no, so the prepared "it's done" reply would be a false promise.
+        analysis.pop("reply_after_approval", None)
+        answered = row(conn, "SELECT id FROM actions WHERE case_id = ? AND action = 'send_reply' "
+                             "AND status = 'executed' LIMIT 1", (case_id,))
+        status = "resolved" if answered else "needs_reply"
+        conn.execute("UPDATE cases SET analysis = ?, status = ?, resolved_at = ? WHERE id = ?",
+                     (json.dumps(analysis, ensure_ascii=False), status, now_iso() if answered else None, case_id))
+        conn.commit()
+        if not answered:
+            notify(conn, "support", f"✋ Кейс {case_id} · дію відхилено · відповідь клієнту пише людина",
+                   case_link(case_id))
+        return
     if case["channel"] == "chat" and analysis.get("reply_after_approval"):
         if _send_or_hold(conn, case_id, analysis.pop("reply_after_approval"), workspace.get(conn), analysis):
             return
@@ -259,24 +291,36 @@ def _finish_if_done(conn: sqlite3.Connection, case_id: int) -> None:
 
 def approve(conn: sqlite3.Connection, action_id: int, who: str) -> dict:
     a = row(conn, "SELECT * FROM actions WHERE id = ? AND status = 'pending'", (action_id,))
-    if not a:
+    if not a or not _claim(conn, action_id, "running", who):
         return {"error": "дію не знайдено або вже оброблено"}
     case = row(conn, "SELECT * FROM cases WHERE id = ?", (a["case_id"],))
     params = json.loads(a["params"])
-    result = create_bug(conn, case, params) if a["action"] == "create_bug_ticket" else _run(conn, case, a["action"], params)
-    conn.execute("UPDATE actions SET status = 'executed', approved_by = ?, result = ? WHERE id = ?",
-                 (who, json.dumps(result, ensure_ascii=False), action_id))
+    try:
+        result = create_bug(conn, case, params) if a["action"] == "create_bug_ticket" else _run(conn, case, a["action"], params)
+    except Exception:
+        conn.execute("UPDATE actions SET status = 'pending', approved_by = NULL WHERE id = ?", (action_id,))
+        conn.commit()
+        raise
+    conn.execute("UPDATE actions SET status = 'executed', result = ? WHERE id = ?",
+                 (json.dumps(result, ensure_ascii=False), action_id))
     audit.log(conn, "action_approved", {"action": a["action"], "params": params, "approved_by": who}, a["case_id"])
     conn.commit()
     _finish_if_done(conn, a["case_id"])
     return result
 
 
+def _claim(conn: sqlite3.Connection, action_id: int, status: str, who: str) -> bool:
+    """Moves a pending action on in one statement, so a double click or a second agent can't run it twice."""
+    claimed = conn.execute("UPDATE actions SET status = ?, approved_by = ? WHERE id = ? AND status = 'pending'",
+                           (status, who, action_id)).rowcount
+    conn.commit()
+    return bool(claimed)
+
+
 def reject(conn: sqlite3.Connection, action_id: int, who: str) -> dict:
     a = row(conn, "SELECT * FROM actions WHERE id = ? AND status = 'pending'", (action_id,))
-    if not a:
+    if not a or not _claim(conn, action_id, "declined", who):
         return {"error": "дію не знайдено або вже оброблено"}
-    conn.execute("UPDATE actions SET status = 'declined', approved_by = ? WHERE id = ?", (who, action_id))
     audit.log(conn, "action_declined", {"action": a["action"], "declined_by": who}, a["case_id"])
     conn.commit()
     _finish_if_done(conn, a["case_id"])
@@ -317,7 +361,7 @@ def create_bug(conn: sqlite3.Connection, case: dict, params: dict) -> dict:
 
 def check_term_incidents(conn: sqlite3.Connection, trigger_case: int | None = None) -> list[dict]:
     groups = rows(conn, "SELECT before, after, COUNT(DISTINCT doctor_id) AS doctors, MIN(ts) AS first_seen "
-                        "FROM term_edits WHERE ts >= datetime('now', '-48 hours') GROUP BY before, after "
+                        "FROM term_edits WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-48 hours') GROUP BY before, after "
                         "HAVING doctors >= ?", (INCIDENT_MIN_DOCTORS,))
     trigger = row(conn, "SELECT doctor_id FROM cases WHERE id = ?", (trigger_case,)) if trigger_case else None
     own_pairs = {(r["before"], r["after"]) for r in actions.term_edits(conn, trigger["doctor_id"])} if trigger else set()
@@ -371,7 +415,7 @@ def mark_incident_fixed(conn: sqlite3.Connection, incident_id: int, who: str) ->
         return {"error": "інцидент не знайдено або вже закрито"}
     before, after = incident["key"].removeprefix("term:").split("->")
     doctors = [r["doctor_id"] for r in rows(conn, "SELECT DISTINCT doctor_id FROM term_edits WHERE before = ? "
-                                                  "AND after = ? AND ts >= datetime('now', '-7 days')", (before, after))]
+                                                  "AND after = ? AND ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days')", (before, after))]
     conn.execute("UPDATE incidents SET status = 'fixed', fixed_at = ? WHERE id = ?", (now_iso(), incident_id))
     holder = row(conn, "SELECT id FROM cases WHERE channel = 'incident' AND incident_id = ?", (incident_id,))
     text = (f"Вітаємо! Ми виправили розпізнавання терміна «{after}»: тепер він записується правильно для всіх. "

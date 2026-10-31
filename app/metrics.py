@@ -25,8 +25,9 @@ def summary(conn: sqlite3.Connection) -> dict:
     dev = [c for c in cases if c["incident_id"]]
     analyses = [json.loads(c["analysis"] or "{}") for c in cases]
     no_question = sum(1 for a in analyses if not a.get("clarifying_question"))
+    # Retained = asked to cancel, the case is closed, and the subscription is still active.
     retained = sum(1 for c, a in zip(cases, analyses)
-                   if "скасу" in (a.get("stated_request") or "").lower() + (c["text"] or "").lower()
+                   if c["status"] == "resolved" and "скасу" in (a.get("stated_request") or "").lower() + (c["text"] or "").lower()
                    and not rows(conn, "SELECT id FROM doctors WHERE id = ? AND status = 'cancelled'", (c["doctor_id"],)))
     times = [m for m in (_minutes(c["processed_at"], c["resolved_at"]) for c in cases) if m is not None]
     manual_minutes = get_setting(conn, "manual_minutes_per_case", 8)
