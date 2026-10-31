@@ -59,6 +59,11 @@ RISK_PATTERNS: dict[str, list[str]] = {
         r"пацієнт\w*.{0,40}(вже|уже)\s+(отрима|забра|має)\w*.{0,40}(помилк|неправильн)",
         r"помилк\w*.{0,30}(діагноз|висновк)",
     ],
+    # Text that tries to steer the assistant itself: never acted on, always reviewed by a human.
+    "prompt_injection": [
+        r"ігнору\w*.{0,30}(інструкц|правил|вказівк)", r"ignore\s+(all\s+)?(previous|prior)",
+        r"ти\s+тепер\s+\w+", r"system\s*prompt", r"you\s+are\s+now",
+    ],
 }
 
 

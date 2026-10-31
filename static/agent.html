@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scriber Care · Панель агента</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="hdr"></div>
+<div class="layout">
+  <aside class="card queue">
+    <div class="row" style="justify-content: space-between; margin-bottom: 8px">
+      <h3 style="margin: 0">Черга</h3>
+      <div class="row"><button id="process">Обробити нові</button></div>
+    </div>
+    <div id="queue"></div>
+  </aside>
+  <main id="detail" class="stack"><div class="card empty">Оберіть звернення в черзі</div></main>
+  <aside class="stack">
+    <div class="card">
+      <h3>Сповіщення команди (Slack)</h3>
+      <div id="feed" class="small"></div>
+    </div>
+    <div class="card small muted">
+      <b>Хто ви:</b> <select id="who" style="width: auto"><option>Оля</option><option>Катерина</option><option>Андрій</option></select>
+      <div style="margin-top: 8px"><button id="reset" class="danger">Скинути демо-дані</button></div>
+    </div>
+  </aside>
+</div>
+<script src="/static/common.js"></script>
+<script>
+document.getElementById("hdr").innerHTML = header("agent");
+let current = new URLSearchParams(location.search).get("case");
+const who = () => document.getElementById("who").value;
+
+async function loadQueue() {
+  const items = await api("/api/cases");
+  document.getElementById("queue").innerHTML = items.map((c) => `
+    <div class="queue-item ${String(c.id) === String(current) ? "active" : ""}" onclick="openCase(${c.id})">
+      <div class="meta"><span class="badge ${c.priority || "none"}">${c.priority || "нове"}</span>
+        <span>#${c.id} · ${CHANNEL[c.channel] || c.channel}</span><span>· ${STATUS[c.status] || c.status}</span>
+        ${c.emotion && c.emotion.type === "anger" ? '<span title="злість">😠</span>' : ""}
+        ${c.sarcasm ? '<span title="сарказм">🙃</span>' : ""}</div>
+      <div><b>${esc(c.doctor || (c.channel === "review" ? "Публічний відгук" : c.channel === "incident" ? "Масова проблема" : ""))}</b></div>
+      <div class="text muted">${esc(c.real_goal || c.text)}</div>
+    </div>`).join("") || '<div class="muted">Порожньо</div>';
+}
+
+async function loadFeed() {
+  const items = await api("/api/notifications");
+  document.getElementById("feed").innerHTML = items.map((n) => `
+    <div class="feed-item"><div class="ch">#${n.channel} · ${n.ts.slice(11, 16)} ${n.delivered ? "· ✓ Slack" : ""}</div>
+    ${esc(n.text)} ${n.link ? `<a href="${esc(n.link)}">→</a>` : ""}</div>`).join("") || '<div class="muted">Поки тихо</div>';
+}
+
+function actionRow(a) {
+  const params = Object.entries(a.params || {}).filter(([k]) => k !== "text" && k !== "doctors")
+    .map(([k, v]) => `${k}: ${esc(v)}`).join(", ");
+  const extra = a.action === "post_review_reply" ? `<div class="msg" style="max-width: 100%; margin-top: 6px">${esc(a.params.text)}</div>` :
+    a.action === "notify_affected" ? `<div class="small" style="margin-top: 4px">${(a.params.doctors || []).length} лікарів: «${esc(a.params.text)}»</div>` : "";
+  const result = a.result && a.result.done ? `<div class="small">✓ ${esc(a.result.done)} ${a.result.url ? `<a href="${esc(a.result.url)}" target="_blank">тікет</a>` : ""}</div>` : "";
+  const buttons = a.status === "pending" ? `<div class="row">
+      <button class="primary" onclick="decide(${a.id}, 'approve')">Підтвердити</button>
+      <button onclick="decide(${a.id}, 'reject')">Відхилити</button></div>` : `<span class="st ${a.status}">${STATUS[a.status] || a.status}</span>`;
+  return `<div class="action"><div><b>${esc(a.title)}</b> ${params ? `<span class="mono muted">(${params})</span>` : ""}
+      ${a.why ? `<div class="why">${esc(a.why)}</div>` : ""}<div class="rule">Правило: ${esc(a.rule)}${a.approved_by ? ` · підтвердив(ла) ${esc(a.approved_by)}` : ""}</div>${result}${extra}</div>
+      <div>${buttons}</div></div>`;
+}
+
+async function openCase(id) {
+  current = id;
+  history.replaceState(null, "", `/?case=${id}`);
+  const c = await api(`/api/cases/${id}`);
+  const a = c.analysis || {};
+  const em = a.emotion || {};
+  const flags = (a.risk_flags || []);
+  const reads = c.actions.filter((x) => x.rule === "P3: читання");
+  const work = c.actions.filter((x) => x.rule !== "P3: читання");
+  const candidate = a.candidate;
+  document.getElementById("detail").innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content: space-between">
+        <div class="row"><span class="badge ${c.priority || "none"}">${c.priority || "нове"}</span>
+          <b>Кейс #${c.id}</b><span class="muted">· ${CHANNEL[c.channel] || c.channel} · ${STATUS[c.status] || c.status}</span></div>
+        <div class="muted small">${c.doctor ? esc(c.doctor.name) + " · " + esc(c.doctor.specialty) : ""}</div>
+      </div>
+      ${c.status === "new" ? `<div style="margin-top: 10px"><button class="primary" onclick="processCase(${c.id})">Обробити AI</button></div>` : ""}
+      ${c.review ? `<div style="margin-top: 10px"><span class="chip">${esc(c.review.source)}</span><span class="chip">${"★".repeat(c.review.rating)}${"☆".repeat(5 - c.review.rating)}</span>
+          <span class="chip">${esc(c.review.author)} · ${esc(c.review.role)} · ${esc(c.review.company_size)}</span></div>` : ""}
+      <div class="msg client" style="max-width: 100%; margin-top: 10px">${esc(c.text)}</div>
+      ${c.masked_text && c.masked_text !== c.text ? `<div class="small muted" style="margin-top: 6px">AI бачив замасковану версію: <span class="mono">${esc(c.masked_text)}</span></div>` : ""}
+    </div>
+    ${c.priority === "P0" ? `<div class="banner">P0 · автоматичні дії заблоковано: ${flags.map(esc).join(", ") || "критичний випадок"}. Рішення ухвалює людина.</div>` : ""}
+    ${a.real_goal ? `<div class="card">
+      <h3>Розуміння AI</h3>
+      <div class="goal"><div class="box"><div class="label">Заявлено</div>${esc(a.stated_request)}</div><div class="arrow">→</div>
+        <div class="box real"><div class="label">Справжня мета</div><b>${esc(a.real_goal)}</b></div></div>
+      <div style="margin-top: 10px">
+        <span class="chip ${a.verdict === "bug" ? "warn" : "good"}">Вердикт: ${VERDICT[a.verdict] || a.verdict}</span>
+        ${a.gotcha ? `<span class="chip">база знань: ${esc(a.gotcha)}</span>` : ""}
+        <span class="chip ${em.type === "anger" ? "bad" : ""}">Тон: ${EMOTION[em.type] || em.type || "—"} ${em.intensity ? Math.round(em.intensity * 100) + "%" : ""}</span>
+        ${a.sarcasm ? '<span class="chip warn">Сарказм</span>' : ""}
+        ${a.repeat_contact ? '<span class="chip bad">Звертається повторно</span>' : ""}
+        <span class="chip ${a.churn_risk === "high" ? "bad" : ""}">Ризик відтоку: ${esc(a.churn_risk || "—")}</span>
+        <span class="chip">Впевненість: ${Math.round((a.confidence || 0) * 100)}%</span>
+        <span class="chip mono">${esc(a.engine || "")}</span>
+      </div>
+      ${(a.evidence || []).length ? `<div class="small" style="margin-top: 6px"><b>Докази:</b> ${a.evidence.map(esc).join(" · ")}</div>` : ""}
+      ${a.clarifying_question ? `<div class="small" style="margin-top: 6px"><b>Одне уточнення:</b> ${esc(a.clarifying_question)}</div>` : ""}
+      ${reads.length ? `<div class="small muted" style="margin-top: 6px">Контекст зібрано автоматично: ${reads.map((r) => esc(r.title)).join(" · ")}</div>` : ""}
+    </div>` : ""}
+    ${candidate ? `<div class="card"><h3>Хто автор відгуку</h3>
+      <div><b>${esc(candidate.name)}</b> · збіг ${Math.round(candidate.confidence * 100)}% · <span class="small muted">${candidate.reasons.map(esc).join(", ")}</span></div>
+      ${c.doctor ? '<div class="small" style="margin-top: 6px">✓ Підтверджено людиною</div>' :
+        `<div style="margin-top: 8px"><button onclick="confirmReviewer(${c.id}, '${candidate.doctor_id}')">Підтвердити автора</button>
+         <span class="small muted">AI лише пропонує, остаточно вирішує людина</span></div>`}</div>` : ""}
+    ${c.incident ? `<div class="card"><h3>Масова проблема</h3><div><b>${esc(c.incident.title)}</b></div>
+      <div class="small">${c.incident.doctors} лікарів за 48 год · ${c.incident.status === "open" ? "відкрито" : "виправлено"}
+      ${c.incident.issue_url ? ` · <a href="${esc(c.incident.issue_url)}" target="_blank">GitHub Issue</a>` : " · тікет-чернетка"}</div>
+      ${c.incident.status === "open" && c.channel === "incident" ? `<div style="margin-top: 8px"><button onclick="fixIncident(${c.incident.id})">Позначити виправленим</button></div>` : ""}</div>` : ""}
+    ${work.length ? `<div class="card"><h3>План і дії</h3>${work.map(actionRow).join("")}</div>` : ""}
+    ${c.messages.length || c.channel === "chat" ? `<div class="card"><h3>Розмова з клієнтом</h3>
+      <div class="msgs">${c.messages.map((m) => `<div class="msg ${m.sender}"><div class="who">${{ client: "Лікар", ai: "AI", agent: "Агент" }[m.sender]} · ${m.ts.slice(11, 16)}</div>${esc(m.text)}</div>`).join("")}</div>
+      ${c.channel === "chat" ? `<div class="row" style="margin-top: 10px"><textarea id="replyText" rows="2" placeholder="Відповісти клієнту вручну"></textarea>
+        <button onclick="sendReply(${c.id})">Надіслати</button></div>` : ""}</div>` : ""}`;
+  loadQueue();
+}
+
+async function decide(id, verb) { await api(`/api/actions/${id}/${verb}`, { who: who() }); await refresh(); }
+async function processCase(id) { await api(`/api/cases/${id}/process`, {}); await refresh(); }
+async function confirmReviewer(id, doctorId) { await api(`/api/cases/${id}/reviewer`, { doctor_id: doctorId, who: who() }); await refresh(); }
+async function fixIncident(id) { await api(`/api/incidents/${id}/fixed`, { who: who() }); await refresh(); }
+async function sendReply(id) {
+  const text = document.getElementById("replyText").value.trim();
+  if (!text) return;
+  await api(`/api/cases/${id}/reply`, { text, who: who() });
+  await refresh();
+}
+async function refresh() { await loadQueue(); await loadFeed(); if (current) await openCase(current); }
+
+document.getElementById("process").onclick = async (e) => {
+  e.target.disabled = true; e.target.textContent = "Обробляю…";
+  try { await api("/api/queue/process", {}); } finally { e.target.disabled = false; e.target.textContent = "Обробити нові"; }
+  refresh();
+};
+document.getElementById("reset").onclick = async () => {
+  if (!confirm("Перестворити демо-дані? Усі кейси й журнал буде скинуто.")) return;
+  await api("/api/reset", {}); current = null; history.replaceState(null, "", "/");
+  document.getElementById("detail").innerHTML = '<div class="card empty">Оберіть звернення в черзі</div>';
+  refresh();
+};
+renderStatus(); loadQueue(); loadFeed(); if (current) openCase(current);
+setInterval(() => { loadQueue(); loadFeed(); }, 4000);
+</script>
+</body>
+</html>

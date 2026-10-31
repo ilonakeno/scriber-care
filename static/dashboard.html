@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scriber Care · Дашборд</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="hdr"></div>
+<div class="grid" id="stats"></div>
+<div class="grid">
+  <div class="card span2 stack">
+    <h3>Автономність AI</h3>
+    <div class="small muted">Керівниця підтримки задає межі. Скасування, місця і публічні відповіді завжди потребують людини.</div>
+    <label>Кредит без підтвердження до: <b id="creditV"></b>
+      <input type="range" id="credit" min="0" max="100" step="5" style="width: 100%"></label>
+    <label>Списання доплати понад ліміт без підтвердження до: <b id="waiveV"></b>
+      <input type="range" id="waive" min="0" max="20" step="1" style="width: 100%"></label>
+    <label>Мінімальна впевненість AI: <b id="confV"></b>
+      <input type="range" id="conf" min="0.5" max="1" step="0.05" style="width: 100%"></label>
+    <div class="row"><button class="primary" id="saveAutonomy">Зберегти</button><span id="saved" class="small muted"></span></div>
+  </div>
+  <div class="card span2 stack">
+    <h3>Щоденні задачі</h3>
+    <div class="row"><button id="runReviews">Запустити прохід по відгуках G2 / Capterra</button></div>
+    <div class="row"><button id="sendDigest">Надіслати звіт у Slack</button></div>
+    <div id="runResult" class="small"></div>
+    <pre class="digest" id="digest" style="display: none"></pre>
+  </div>
+  <div class="card span2"><h3>Масові проблеми</h3><div id="incidents"></div></div>
+  <div class="card span2"><h3>Журнал дій</h3><div id="audit"></div></div>
+  <div class="card span4"><h3>Відгуки: оцінка проти настрою тексту</h3><div id="reviews"></div></div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+document.getElementById("hdr").innerHTML = header("dashboard");
+const stat = (n, l, cls = "") => `<div class="card stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+
+async function load() {
+  const m = await api("/api/metrics");
+  document.getElementById("stats").innerHTML = [
+    stat(`${m.ai_only_pct}%`, `вирішено AI самостійно (${m.ai_only} з ${m.cases})`),
+    stat(`${m.support_pct}%`, `потребували підтримки (${m.needed_support})`),
+    stat(`${m.dev_pct}%`, `пов'язані з багом для розробників (${m.needed_dev})`),
+    stat(`${m.no_clarifying_question_pct}%`, "без жодного уточнювального питання"),
+    stat(`~${m.minutes_saved} хв`, `заощаджено агентам (припущення: ${m.manual_minutes_assumption} хв на ручне звернення)`),
+    stat(m.retained_after_cancel_request, "лишилися після «скасуйте підписку»"),
+    stat(m.p0, "критичних кейсів передано людині"),
+    stat(`${m.reviews.support_cases}`, `відгуків стали зверненнями (${m.reviews.replied} з відповіддю)`),
+  ].join("") + `<div class="small muted span4">Усі цифри рахуються з журналу на синтетичних демо-даних. AI: ${esc(m.engines.join(", ") || "—")}</div>`;
+  document.getElementById("incidents").innerHTML = m.incidents.map((i) => `<div class="feed-item">
+      <b>${esc(i.title)}</b><div class="small">${i.doctors} лікарів · ${i.status === "open" ? "відкрито" : "виправлено"}
+      ${i.issue_url ? `· <a href="${esc(i.issue_url)}" target="_blank">GitHub Issue</a>` : "· тікет-чернетка"}</div></div>`).join("") || '<div class="muted">Немає</div>';
+  document.getElementById("audit").innerHTML = `<div class="${m.audit.ok ? "chip good" : "chip bad"}">${m.audit.ok ? "Ланцюжок цілісний" : "Ланцюжок порушено на записі " + m.audit.broken_at}</div>
+    <span class="small muted">${m.audit.entries} записів, кожен містить хеш попереднього</span>`;
+
+  const reviews = await api("/api/reviews");
+  document.getElementById("reviews").innerHTML = `<table><tr><th>Продукт</th><th>Оцінка</th><th>Настрій тексту</th><th>Відгук</th><th>Статус</th></tr>
+    ${reviews.map((r) => {
+      const a = r.analysis || {};
+      const s = a.sentiment;
+      return `<tr><td>${esc(r.product)}${r.product === "Scriber" ? "" : ' <span class="small muted">(вигаданий конкурент)</span>'}</td>
+        <td>${"★".repeat(r.rating)}</td>
+        <td>${s === undefined ? '<span class="muted">не оброблено</span>' : `<span class="chip ${s < 0 ? "bad" : "good"}">${s > 0 ? "+" : ""}${s.toFixed(1)}</span>`}
+          ${a.sarcasm ? '<span class="chip warn">сарказм</span>' : ""}</td>
+        <td>${esc(r.text)}<div class="small muted">${esc(r.source)} · ${esc(r.author)} · ${esc(r.role)}</div></td>
+        <td class="small">${r.reply_status === "published" ? "відповідь опубліковано" : a.is_support_case ? "→ звернення" : ""}</td></tr>`;
+    }).join("")}</table>`;
+}
+
+async function loadAutonomy() {
+  const s = await api("/api/settings/autonomy");
+  credit.value = s.auto_credit_limit_usd; waive.value = s.auto_waive_limit_usd; conf.value = s.auto_min_confidence;
+  showAutonomy();
+}
+function showAutonomy() {
+  creditV.textContent = +credit.value ? `$${credit.value}` : "вимкнено";
+  waiveV.textContent = +waive.value ? `$${waive.value}` : "вимкнено";
+  confV.textContent = `${Math.round(conf.value * 100)}%`;
+}
+[credit, waive, conf].forEach((el) => el.oninput = showAutonomy);
+saveAutonomy.onclick = async () => {
+  await api("/api/settings/autonomy", { auto_credit_limit_usd: +credit.value, auto_waive_limit_usd: +waive.value, auto_min_confidence: +conf.value });
+  saved.textContent = "Збережено, записано в журнал";
+  setTimeout(() => saved.textContent = "", 2500);
+};
+runReviews.onclick = async (e) => {
+  e.target.disabled = true; runResult.textContent = "Аналізую відгуки…";
+  try {
+    const r = await api("/api/reviews/run", {});
+    runResult.innerHTML = r.processed ? `Оброблено ${r.processed} відгуків, нових звернень: ${(r.support_cases || []).length}
+      ${(r.support_cases || []).map((id) => `<a href="/?case=${id}">#${id}</a>`).join(" ")}` : "Нових відгуків нема";
+  } finally { e.target.disabled = false; }
+  load();
+};
+sendDigest.onclick = async () => {
+  const r = await api("/api/digest", {});
+  digest.style.display = "block"; digest.textContent = r.text;
+  runResult.textContent = r.delivered_to_slack ? "Звіт надіслано в Slack" : "Slack не підключено: звіт є у стрічці сповіщень";
+};
+renderStatus(); load(); loadAutonomy();
+</script>
+</body>
+</html>

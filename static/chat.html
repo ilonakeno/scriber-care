@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scriber · Чат підтримки</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="hdr"></div>
+<div class="chat-wrap stack">
+  <div class="card">
+    <div class="row" style="justify-content: space-between">
+      <div><b>Підтримка Scriber</b> <span class="muted small">· так це бачить лікар</span></div>
+      <select id="doctor" style="width: auto"></select>
+    </div>
+  </div>
+  <div class="card"><div class="msgs" id="msgs"><div class="muted">Напишіть, що сталося. Пояснювати деталі акаунта не потрібно: ми бачимо їх самі.</div></div></div>
+  <div class="card row">
+    <textarea id="text" rows="3" placeholder="Ваше повідомлення"></textarea>
+    <button class="primary" id="send">Надіслати</button>
+  </div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+document.getElementById("hdr").innerHTML = header("chat");
+let caseId = new URLSearchParams(location.search).get("case");
+
+async function init() {
+  const doctors = await api("/api/doctors");
+  document.getElementById("doctor").innerHTML = doctors.map((d) =>
+    `<option value="${d.id}">${esc(d.name)} · ${esc(d.clinic || "індивідуально")}</option>`).join("");
+  renderStatus();
+  if (caseId) load();
+}
+
+async function load() {
+  if (!caseId) return;
+  const data = await api(`/api/chat/${caseId}`);
+  if (data.case.doctor_id) document.getElementById("doctor").value = data.case.doctor_id;
+  document.getElementById("msgs").innerHTML = data.messages.map((m) =>
+    `<div class="msg ${m.sender === "client" ? "me" : "them"}"><div class="who">${m.sender === "client" ? "Ви" : "Підтримка Scriber"} · ${m.ts.slice(11, 16)}</div>${esc(m.text)}</div>`).join("");
+}
+
+document.getElementById("send").onclick = async (e) => {
+  const text = document.getElementById("text").value.trim();
+  if (!text) return;
+  e.target.disabled = true;
+  document.getElementById("msgs").insertAdjacentHTML("beforeend", `<div class="msg me"><div class="who">Ви</div>${esc(text)}</div>`);
+  document.getElementById("text").value = "";
+  try {
+    const res = await api("/api/chat", { doctor_id: document.getElementById("doctor").value, text });
+    caseId = res.case_id;
+    history.replaceState(null, "", `/chat?case=${caseId}`);
+    await load();
+  } finally { e.target.disabled = false; }
+};
+init();
+setInterval(load, 3000);
+</script>
+</body>
+</html>
