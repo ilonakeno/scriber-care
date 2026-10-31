@@ -144,10 +144,31 @@ def list_cases(conn=Depends(db)):
                        f"d.name AS doctor FROM cases c LEFT JOIN doctors d ON d.id = c.doctor_id "
                        f"WHERE c.channel != 'proactive' ORDER BY CASE c.status WHEN 'new' THEN 1 "
                        f"WHEN 'resolved' THEN 2 ELSE 0 END, {order}, c.id DESC")
+    approved = {r["case_id"] for r in rows(conn, "SELECT DISTINCT case_id FROM actions WHERE approved_by IS NOT NULL")}
+    by_agent = {r["case_id"] for r in rows(conn, "SELECT DISTINCT case_id FROM messages WHERE sender = 'agent'")}
+    flag_titles = support.FLAG_TITLES
     for item in items:
         a = json.loads(item.pop("analysis") or "{}")
+        route = a.get("route") or {}
+        owner = (route.get("owner") or {}).get("name")
         item.update(real_goal=a.get("real_goal"), emotion=a.get("emotion"), sarcasm=a.get("sarcasm"),
-                    churn_risk=a.get("churn_risk"))
+                    churn_risk=a.get("churn_risk"), owner=owner, route_title=route.get("title"))
+        # One plain-language status per ticket for the ticket board.
+        if item["status"] == "new":
+            item["bucket"], item["label"] = "new", "Нове, ще не оброблено"
+        elif item["status"] == "assigned":
+            item["bucket"], item["label"] = "routed", f"Перенаправлено: {owner}" if owner else "Перенаправлено"
+        elif item["status"] == "escalated":
+            reasons = ", ".join(flag_titles.get(f, f) for f in a.get("risk_flags", [])) or "AI не впевнений"
+            item["bucket"], item["label"] = "human", f"Потрібна людина: {reasons}"
+        elif item["status"] == "waiting_approval":
+            item["bucket"], item["label"] = "human", "AI підготував рішення, чекає підтвердження"
+        elif item["status"] == "waiting_client":
+            item["bucket"], item["label"] = "human", "AI поставив уточнювальне питання"
+        elif item["id"] in approved or item["id"] in by_agent:
+            item["bucket"], item["label"] = "done", "Вирішено разом з людиною"
+        else:
+            item["bucket"], item["label"] = "ai", "AI відповів і вирішив сам"
     return items
 
 

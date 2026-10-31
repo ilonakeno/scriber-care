@@ -9,10 +9,12 @@
 <div id="hdr"></div>
 <div class="layout">
   <aside class="card queue">
-    <div class="row" style="justify-content: space-between; margin-bottom: 8px">
-      <h3 style="margin: 0">Черга</h3>
-      <div class="row"><button id="process">Обробити нові</button></div>
+    <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+      <h3 style="margin: 0">Тікети</h3>
+      <button id="process" class="ghost">Обробити нові</button>
     </div>
+    <input type="search" id="search" placeholder="Пошук: слово, клієнт, кому передано…">
+    <div class="tabs" id="tabs"></div>
     <div id="queue"></div>
   </aside>
   <main id="detail" class="stack"><div class="card empty">Оберіть звернення в черзі</div></main>
@@ -33,18 +35,40 @@ document.getElementById("hdr").innerHTML = header("agent");
 let current = new URLSearchParams(location.search).get("case");
 const who = () => document.getElementById("who").value;
 
+const TABS = [
+  { id: "human", label: "Потрібна людина" },
+  { id: "routed", label: "Перенаправлено" },
+  { id: "ai", label: "AI вирішив сам" },
+  { id: "all", label: "Усі" },
+];
+let tab = "human", allItems = [];
+
 async function loadQueue() {
-  const items = await api("/api/cases");
-  document.getElementById("queue").innerHTML = items.map((c) => `
-    <div class="queue-item ${String(c.id) === String(current) ? "active" : ""}" onclick="openCase(${c.id})">
-      <div class="meta"><span class="badge ${c.priority || "none"}">${c.priority || "нове"}</span>
-        <span>#${c.id} · ${CHANNEL[c.channel] || c.channel}</span><span>· ${STATUS[c.status] || c.status}</span>
-        ${c.emotion && c.emotion.type === "anger" ? '<span title="злість">😠</span>' : ""}
-        ${c.sarcasm ? '<span title="сарказм">🙃</span>' : ""}</div>
-      <div><b>${esc(c.doctor || (c.channel === "review" ? "Публічний відгук" : c.channel === "incident" ? "Масова проблема" : ""))}</b></div>
-      <div class="text muted">${esc(c.real_goal || c.text)}</div>
-    </div>`).join("") || '<div class="muted">Порожньо</div>';
+  allItems = await api("/api/cases");
+  renderQueue();
 }
+
+function renderQueue() {
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  const match = (c) => !q || [c.text, c.doctor, c.real_goal, c.owner, c.route_title, c.label, `#${c.id}`]
+    .some((v) => (v || "").toLowerCase().includes(q));
+  const found = allItems.filter(match);
+  const inTab = (c, id) => id === "all" || c.bucket === id;
+  document.getElementById("tabs").innerHTML = TABS.map((t) =>
+    `<button class="tab ${t.id === tab ? "active" : ""}" onclick="setTab('${t.id}')">${t.label}
+      <span class="count">${found.filter((c) => inTab(c, t.id)).length}</span></button>`).join("");
+  const items = found.filter((c) => inTab(c, tab));
+  document.getElementById("queue").innerHTML = items.map((c) => `
+    <div class="ticket ${String(c.id) === String(current) ? "active" : ""}" onclick="openCase(${c.id})">
+      <div class="t-top"><b>${esc(c.doctor || (c.channel === "review" ? "Публічний відгук" : c.channel === "incident" ? "Масова проблема" : "Гість"))}</b>
+        <span class="muted small">#${c.id}${c.priority ? " · " + c.priority : ""}</span></div>
+      <div class="t-goal">${esc(c.real_goal || c.text)}</div>
+      <div class="t-status b-${c.bucket}">${esc(c.label)}</div>
+    </div>`).join("") || `<div class="muted small" style="padding: 16px 4px">${q ? "Нічого не знайдено" : "Тут поки порожньо"}</div>`;
+}
+
+function setTab(id) { tab = id; renderQueue(); }
+document.getElementById("search").oninput = renderQueue;
 
 async function loadFeed() {
   const items = await api("/api/notifications");
