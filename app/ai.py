@@ -8,10 +8,11 @@ import re
 import sqlite3
 
 from . import config
-from .db import now_iso
+from .db import connect, now_iso
 from .policy import LEVELS
 
 VERDICTS = ["bug", "not_bug", "feature_request", "account_billing"]
+ATTEMPTS_PER_MODEL = 2
 EMOTIONS = ["anger", "frustration", "anxiety", "neutral", "satisfaction"]
 
 # Actions the model may propose. Reads (account, edits, docs) are done by the system itself.
@@ -74,7 +75,8 @@ Rules:
 6. Patient data is masked like [ПАЦІЄНТ_1]. Never try to recover it, never repeat it.
 7. Write replies in Ukrainian, address the doctor by first name, follow the playbook tone: an angry
    customer gets a short, concrete apology and no cheerful emoji. reply_now mentions only safe actions
-   already done (P3). Never promise money in reply_now; put that into reply_after_approval.
+   already done (P3). Never promise money in reply_now. reply_after_approval is sent only AFTER a human
+   approved and the action ran, so write it in the past tense ("нарахували", "додали").
 8. If information is missing and no safe action fits, ask exactly one question in
    "clarifying_question" and use it as reply_now.
 9. "evidence" lists facts from CONTEXT only. "confidence" is 0..1 for your whole analysis.
@@ -85,6 +87,11 @@ Return ONLY one JSON object with this shape:
 
 class LLMUnavailable(Exception):
     pass
+
+
+def _cache() -> sqlite3.Connection:
+    """Model responses live in their own file, so resetting the demo data keeps them."""
+    return connect(config.DB_PATH.with_name("llm_cache.db"))
 
 
 def _escape(text: str) -> str:
@@ -105,22 +112,32 @@ def complete(conn: sqlite3.Connection, prompt: str) -> tuple[str, str]:
         raise LLMUnavailable("GEMINI_API_KEY не задано")
     from google import genai
 
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
-    last_error = None
-    for model in filter(None, [config.LLM_MODEL, config.LLM_FALLBACK_MODEL]):
+    client = genai.Client(api_key=config.GEMINI_API_KEY, http_options={"timeout": 90_000})
+    models = [m.strip() for m in config.LLM_MODEL.split(",") if m.strip()]
+    if config.LLM_FALLBACK_MODEL:
+        models.append(config.LLM_FALLBACK_MODEL)
+    cache = _cache()
+    for model in models:
         key = hashlib.sha256(f"{model}\n{prompt}".encode()).hexdigest()
-        cached = conn.execute("SELECT response FROM llm_cache WHERE key = ?", (key,)).fetchone()
+        cached = cache.execute("SELECT response FROM llm_cache WHERE key = ?", (key,)).fetchone()
         if cached:
             return cached["response"], model
-        try:
-            response = client.models.generate_content(model=model, contents=prompt,
-                                                      config={"temperature": 0.2})
-            text = response.text or ""
-            conn.execute("INSERT OR REPLACE INTO llm_cache VALUES (?, ?, ?, ?)", (key, text, model, now_iso()))
-            conn.commit()
-            return text, model
-        except Exception as exc:  # network, quota, unknown model: try the next one
-            last_error = exc
+    last_error = None
+    for model in models:
+        # Minimal thinking cuts Gemma latency roughly 4x on our prompt with the same answers.
+        settings = {"temperature": 0.2}
+        if model.startswith("gemma"):
+            settings["thinking_config"] = {"thinking_level": "minimal"}
+        for _ in range(ATTEMPTS_PER_MODEL):
+            try:
+                response = client.models.generate_content(model=model, contents=prompt, config=settings)
+                text = response.text or ""
+                key = hashlib.sha256(f"{model}\n{prompt}".encode()).hexdigest()
+                cache.execute("INSERT OR REPLACE INTO llm_cache VALUES (?, ?, ?, ?)", (key, text, model, now_iso()))
+                cache.commit()
+                return text, model
+            except Exception as exc:  # transient 500s, quota, unknown model: retry, then next model
+                last_error = exc
     raise LLMUnavailable(str(last_error))
 
 

@@ -226,7 +226,7 @@ def audit_log(conn=Depends(db)):
 
 @app.get("/api/status")
 def status(conn=Depends(db)):
-    return {"llm_model": config.LLM_MODEL if config.GEMINI_API_KEY else None,
+    return {"llm_model": config.LLM_MODEL.split(",")[0].strip() if config.GEMINI_API_KEY else None,
             "slack": bool(config.SLACK_WEBHOOK_SUPPORT), "github_repo": config.GITHUB_REPO or None,
             "manual_minutes_per_case": get_setting(conn, "manual_minutes_per_case", 8)}
 

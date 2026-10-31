@@ -120,7 +120,7 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
         notify(conn, "support", f"🟠 P2 · Кейс {case_id} · {analysis['real_goal'][:90]} · "
                                 f"ризик відтоку: {analysis['churn_risk']} · підтвердити: {', '.join(pending)}",
                case_link(case_id))
-    if analysis["category"] == "stt_term_error":
+    if analysis["category"] == "stt_term_error" or context.get("term_edits_7d"):
         check_term_incidents(conn, case_id)
     return analysis
 
@@ -207,12 +207,15 @@ def check_term_incidents(conn: sqlite3.Connection, trigger_case: int | None = No
     groups = rows(conn, "SELECT before, after, COUNT(DISTINCT doctor_id) AS doctors, MIN(ts) AS first_seen "
                         "FROM term_edits WHERE ts >= datetime('now', '-48 hours') GROUP BY before, after "
                         "HAVING doctors >= ?", (INCIDENT_MIN_DOCTORS,))
+    trigger = row(conn, "SELECT doctor_id FROM cases WHERE id = ?", (trigger_case,)) if trigger_case else None
+    own_pairs = {(r["before"], r["after"]) for r in actions.term_edits(conn, trigger["doctor_id"])} if trigger else set()
     created = []
     for g in groups:
         key = f"term:{g['before']}->{g['after']}"
+        related = (g["before"], g["after"]) in own_pairs
         existing = row(conn, "SELECT * FROM incidents WHERE key = ?", (key,))
         if existing:
-            if trigger_case:
+            if related:
                 conn.execute("UPDATE cases SET incident_id = ? WHERE id = ?", (existing["id"], trigger_case))
                 conn.commit()
             continue
@@ -239,7 +242,7 @@ def check_term_incidents(conn: sqlite3.Connection, trigger_case: int | None = No
                 "auto", "P1: баг-тікет створюється автоматично", "executed", result)
         _record(conn, holder, "add_term_global_dictionary", {"term": g["after"]}, "виправлення для всіх лікарів",
                 "approval", "P1: зміна для всіх клієнтів, підтверджує розробник", "pending")
-        if trigger_case:
+        if related:
             conn.execute("UPDATE cases SET incident_id = ? WHERE id = ?", (incident_id, trigger_case))
         conn.commit()
         notify(conn, "dev", f"🔴 P1 · Масова проблема · {title} · {g['doctors']} лікарів за 48 год · "
