@@ -6,13 +6,14 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 
 from . import config
 from .db import connect, now_iso
 from .policy import LEVELS
 
 VERDICTS = ["bug", "not_bug", "feature_request", "account_billing"]
-ATTEMPTS_PER_MODEL = 2
+ATTEMPTS_PER_MODEL = 3
 EMOTIONS = ["anger", "frustration", "anxiety", "neutral", "satisfaction"]
 
 # Actions the model may propose. Reads (account, edits, docs) are done by the system itself.
@@ -132,7 +133,9 @@ def complete(conn: sqlite3.Connection, prompt: str) -> tuple[str, str]:
         settings = {"temperature": 0.2}
         if model.startswith("gemma"):
             settings["thinking_config"] = {"thinking_level": "minimal"}
-        for _ in range(ATTEMPTS_PER_MODEL):
+        for attempt in range(ATTEMPTS_PER_MODEL):
+            if attempt:
+                time.sleep(2)  # the shared Gemma endpoint returns transient 500s under load
             try:
                 response = client.models.generate_content(model=model, contents=prompt, config=settings)
                 text = response.text or ""

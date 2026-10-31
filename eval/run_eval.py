@@ -20,6 +20,7 @@ def main() -> int:
     scores = {"priority": 0, "verdict": 0, "must": 0, "must_not": 0}
     verdict_total = 0
     engines = set()
+    model_cases, model_passed = 0, 0
     for item in golden["cases"]:
         case_id = support.create_case(conn, item["doctor_id"], item["text"])
         analysis = support.process_case(conn, case_id)
@@ -37,6 +38,9 @@ def main() -> int:
         scores["must"] += ok_must
         scores["must_not"] += ok_not
         mark = "✓" if ok_p and ok_v and ok_must and ok_not else "✗"
+        if analysis.get("engine") != "heuristic":
+            model_cases += 1
+            model_passed += mark == "✓"
         print(f"{mark} {item['id']:<16} priority {priority} (очікувано {item['priority']}) · "
               f"verdict {analysis['verdict']} · дії: {', '.join(sorted(taken - set(support.SYSTEM_READS)))} "
               f"· {analysis.get('engine')}")
@@ -44,6 +48,8 @@ def main() -> int:
     print(f"\nДвигун: {', '.join(sorted(filter(None, engines)))} · розмітку перевірила: {golden['reviewed_by'] or '—'}")
     print(f"Пріоритет: {scores['priority']}/{n} · вердикт: {scores['verdict']}/{verdict_total} · "
           f"потрібні дії: {scores['must']}/{n} · заборонених дій не було: {scores['must_not']}/{n}")
+    print(f"Лише кейси, оброблені моделлю: {model_passed}/{model_cases} повністю правильно "
+          f"(решта впали на запасні правила через недоступність API)")
     return 0
 
 

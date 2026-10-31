@@ -80,7 +80,10 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
     plan = [Proposed(a["action"], a["params"], a["why"]) for a in analysis["proposed_actions"]
             if not (a["action"] == "create_bug_ticket" and open_incident)]  # the incident already has a ticket
     doctor = context.get("doctor") or {}
-    policy_ctx = Context(confidence=analysis["confidence"], ai_priority=analysis["priority"], risk_flags=flags,
+    ai_priority = analysis["priority"]
+    if ai_priority == "P1" and open_incident:
+        ai_priority = "P3"  # the incident case carries P1; this customer's own case is routine
+    policy_ctx = Context(confidence=analysis["confidence"], ai_priority=ai_priority, risk_flags=flags,
                          account_monthly_usd=float(doctor.get("monthly_usd") or 0),
                          overage_usd=float((context.get("invoice") or {}).get("overage_usd") or 0),
                          recent_credit=bool(context.get("recent_credit")))
