@@ -245,7 +245,7 @@ def heuristic_analyze(text: str, context: dict) -> dict:
                    priority="P2" if cancel else "P3")
         act("add_term_personal_dictionary", "лікар повторно виправляє той самий термін", term=top["after"])
         act("regenerate_protocol", "останній протокол містить помилку", protocol="last")
-        if cancel or emotion["type"] == "anger":
+        if cancel or (emotion["type"] == "anger" and repeat):
             act("issue_credit", "високий ризик відтоку, вибачення",
                 amount_usd=(context.get("doctor") or {}).get("monthly_usd", 29))
             out["reply_after_approval"] = f"{hello}ми нарахували вам місяць безкоштовно за незручності."
@@ -281,7 +281,16 @@ def heuristic_analyze(text: str, context: dict) -> dict:
         act("add_seats", "запит адміністратора клініки", count=count)
         out["reply_now"] = f"{hello}прийняли запит, місця додамо після підтвердження."
         out["reply_after_approval"] = f"{hello}додали {count} місця, нові лікарі можуть входити."
-    elif re.search(r"форматуван|міс|вставля", low):
+    elif re.search(r"юрист|адвокат|суд|через банк|оскарж", low):
+        out.update(category="other", feature="billing", verdict="account_billing", priority="P0",
+                   real_goal="повернення коштів під загрозою скарги: вирішує людина",
+                   reply_now=f"{hello}ми передали ваше звернення відповідальному спеціалісту.")
+        act("escalate_to_human", "погрози юристом або банком", reason="legal threat")
+    elif re.search(r"шаблон|можна зробити|хотілося б", low):
+        out.update(category="feature_request", feature="protocol-generation", verdict="feature_request",
+                   real_goal="структурований шаблон з вибором опцій")
+        out["reply_now"] = f"{hello}дякуємо, записали це як запит на нову можливість і передали команді."
+    elif re.search(r"форматуван|\bміс\b|вставля", low):
         out.update(category="export_format", feature="export", verdict="not_bug", gotcha="EX-G1",
                    real_goal="вставити протокол у МІС без поломки таблиць")
         act("send_help_article", "відомий випадок у базі знань", gotcha="EX-G1")
