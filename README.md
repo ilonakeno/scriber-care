@@ -102,6 +102,22 @@ git clone https://github.com/ilonakeno/scriber-care && cd scriber-care
 
 Секрети задаються в панелі платформи: `GEMINI_API_KEY`, `BASIC_AUTH_PASSWORD`.
 
+## Модель і ліцензії
+
+- **Модель:** Gemma 4 `gemma-4-26b-a4b-it` (open-weight, Google), через Gemini API.
+  Умови використання: [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
+  Резерв, коли спільний ендпоінт перевантажений: `gemini-3-flash-preview` через той самий ключ.
+  Кожен кейс показує, яка модель його обробила.
+- **Ключові залежності:** FastAPI, Uvicorn, google-genai, httpx, pytest.
+- **Код проєкту:** MIT (див. `LICENSE`).
+
+## Як перевірити журі
+
+1. **Онлайн:** посилання і пароль на останньому слайді презентації.
+2. **Локально:** `./run.sh` → http://localhost:8000 (Python 3.10+; без ключа працюють запасні правила).
+3. **Docker:** `docker build -t customer-care . && docker run -p 8080:8080 customer-care` → http://localhost:8080
+4. **Тести:** `.venv/bin/python -m pytest -q` (34 тести).
+
 ## Стек
 
 Python, FastAPI, SQLite, vanilla JS. Gemma 4 (`gemma-4-26b-a4b-it`) через Gemini API, резерв
