@@ -28,7 +28,7 @@ let caseId = new URLSearchParams(location.search).get("case");
 async function init() {
   const doctors = await api("/api/doctors");
   document.getElementById("doctor").innerHTML = doctors.map((d) =>
-    `<option value="${d.id}">${esc(d.name)} · ${esc(d.clinic || "індивідуально")}</option>`).join(""
+    `<option value="${d.id}">${esc(d.name)} · ${esc(d.clinic || "індивідуально")}</option>`).join("")
     + `<option value="">Гість без акаунта</option>`;
   renderStatus();
   if (caseId) load();
