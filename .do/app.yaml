@@ -1,0 +1,24 @@
+# DigitalOcean App Platform: Create App → GitHub → this repo; it detects the Dockerfile.
+# Then set the secrets in the dashboard (Settings → App-Level Environment Variables).
+name: customer-care
+services:
+  - name: web
+    github:
+      repo: ilonakeno/scriber-care
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    envs:
+      - key: GEMINI_API_KEY
+        type: SECRET
+      - key: LLM_MODEL
+        value: gemma-4-26b-a4b-it
+      - key: LLM_FALLBACK_MODEL
+        value: gemini-3-flash-preview
+      - key: BASIC_AUTH_USER
+        value: demo
+      - key: BASIC_AUTH_PASSWORD
+        type: SECRET

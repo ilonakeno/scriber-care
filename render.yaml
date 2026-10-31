@@ -1,0 +1,17 @@
+# Render: New → Blueprint → this repo. Set GEMINI_API_KEY and BASIC_AUTH_PASSWORD when asked.
+services:
+  - type: web
+    name: customer-care
+    runtime: docker
+    plan: free
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: gemma-4-26b-a4b-it
+      - key: LLM_FALLBACK_MODEL
+        value: gemini-3-flash-preview
+      - key: BASIC_AUTH_USER
+        value: demo
+      - key: BASIC_AUTH_PASSWORD
+        sync: false

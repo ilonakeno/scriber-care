@@ -1,0 +1,59 @@
+{
+  "preset": "my-business",
+  "connector": "none",
+  "business": {
+    "name": "Назва бізнесу",
+    "product": "Що продаєте, одним-двома реченнями",
+    "customers": "Хто ваші клієнти",
+    "address": "ви",
+    "language": "українська"
+  },
+  "team": [
+    {
+      "id": "support",
+      "name": "Ім'я",
+      "role": "Підтримка",
+      "handle": "@support",
+      "owns": "за що відповідає"
+    },
+    {
+      "id": "partners",
+      "name": "Ім'я",
+      "role": "Партнерства",
+      "handle": "@partners",
+      "owns": "партнерські пропозиції"
+    }
+  ],
+  "routes": [
+    {
+      "id": "partnership",
+      "title": "Партнерство і співпраця",
+      "owner": "partners",
+      "mode": "human_only",
+      "priority": "P2",
+      "keywords": [
+        "партнерств",
+        "співпрац"
+      ]
+    },
+    {
+      "id": "general",
+      "title": "Загальні питання",
+      "owner": "support",
+      "mode": "ai",
+      "priority": "P3",
+      "keywords": []
+    }
+  ],
+  "tone": {
+    "structure": "визнати почуття → вибачення або подяка → що зроблено → що далі і коли",
+    "rules": [
+      "Звертатися на «ви»."
+    ],
+    "forbidden": [
+      "це ваша помилка"
+    ]
+  },
+  "instructions": "Додаткові правила для асистента.",
+  "knowledge": "### FAQ-1 · Назва\n- Що відповісти і що зробити."
+}

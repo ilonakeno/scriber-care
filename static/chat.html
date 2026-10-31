@@ -2,7 +2,7 @@
 <html lang="uk">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Scriber · Чат підтримки</title>
+<title>Customer Care · Чат клієнта</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -10,7 +10,7 @@
 <div class="chat-wrap stack">
   <div class="card">
     <div class="row" style="justify-content: space-between">
-      <div><b>Підтримка Scriber</b> <span class="muted small">· так це бачить лікар</span></div>
+      <div><b>Чат підтримки</b> <span class="muted small">· так це бачить клієнт</span></div>
       <select id="doctor" style="width: auto"></select>
     </div>
   </div>
@@ -28,7 +28,8 @@ let caseId = new URLSearchParams(location.search).get("case");
 async function init() {
   const doctors = await api("/api/doctors");
   document.getElementById("doctor").innerHTML = doctors.map((d) =>
-    `<option value="${d.id}">${esc(d.name)} · ${esc(d.clinic || "індивідуально")}</option>`).join("");
+    `<option value="${d.id}">${esc(d.name)} · ${esc(d.clinic || "індивідуально")}</option>`).join(""
+    + `<option value="">Гість без акаунта</option>`;
   renderStatus();
   if (caseId) load();
 }
@@ -38,7 +39,7 @@ async function load() {
   const data = await api(`/api/chat/${caseId}`);
   if (data.case.doctor_id) document.getElementById("doctor").value = data.case.doctor_id;
   document.getElementById("msgs").innerHTML = data.messages.map((m) =>
-    `<div class="msg ${m.sender === "client" ? "me" : "them"}"><div class="who">${m.sender === "client" ? "Ви" : "Підтримка Scriber"} · ${m.ts.slice(11, 16)}</div>${esc(m.text)}</div>`).join("");
+    `<div class="msg ${m.sender === "client" ? "me" : "them"}"><div class="who">${m.sender === "client" ? "Ви" : "Підтримка"} · ${m.ts.slice(11, 16)}</div>${esc(m.text)}</div>`).join("");
 }
 
 document.getElementById("send").onclick = async (e) => {

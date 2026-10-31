@@ -51,6 +51,20 @@ TICKETS = [
     ("D-007", 1, "Чи можна зробити шаблон для щитоподібної з вибором опцій замість диктування?"),
 ]
 
+# Product logs the agent reads for context: account, minutes ago, level, source, message.
+EVENTS = [
+    ("D-001", 25, "warn", "stt", "низька впевненість розпізнавання на слові «гіпоехогенне» (0.41), записано «гіперехогенне»"),
+    ("D-001", 22, "info", "editor", "лікар вручну замінив «гіперехогенне» → «гіпоехогенне» у протоколі P-0010"),
+    ("D-005", 600, "error", "recorder", "NotAllowedError: доступ до мікрофона заборонено (Safari, iOS)"),
+    ("D-005", 598, "error", "recorder", "NotAllowedError: доступ до мікрофона заборонено (Safari, iOS)"),
+    ("D-004", 430, "error", "recorder", "мережа зникла на сегменті 14; сегменти 1–13 розпізнані й збережені"),
+    ("D-004", 429, "warn", "protocol", "генерацію протоколу не запущено: запис не завершено"),
+    ("D-012", 2000, "info", "billing", "лічильник протоколів за місяць: 460 з 400 включених, переплата $6.00"),
+    ("D-008", 300, "info", "export", "експорт DOCX з таблицями, далі копіювання в буфер"),
+    ("D-011", 240, "info", "ui", "ширина вікна 720px: панель дій згорнута в меню «⋯»"),
+    ("D-009", 400, "info", "billing", "клініка «Сонограф-Лаб»: 5 з 5 місць зайнято"),
+]
+
 # source, product, author, role/company size, rating, text, days ago
 REVIEWS = [
     ("G2", "Scriber", "Olena P.", "Sonographer", "11–50 employees", 2,
@@ -126,6 +140,10 @@ def seed(path=None) -> None:
     # A credit issued recently, so the "second credit in 30 days" rule has something to catch.
     conn.execute("INSERT INTO credits (account_id, amount_usd, reason, case_id, ts) VALUES (?, ?, ?, NULL, ?)",
                  ("D-008", 10.0, "компенсація за збій експорту", iso(now - timedelta(days=9))))
+
+    for did, minutes_ago, level, source, message in EVENTS:
+        conn.execute("INSERT INTO events (account_id, ts, level, source, message) VALUES (?, ?, ?, ?, ?)",
+                     (did, iso(now - timedelta(minutes=minutes_ago)), level, source, message))
 
     for did, hours_ago, text in TICKETS:
         conn.execute("INSERT INTO cases (channel, doctor_id, text, created_at, status) "

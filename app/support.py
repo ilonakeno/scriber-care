@@ -3,7 +3,7 @@ Also incidents (the same problem across many doctors) and the knowledge-base loo
 import json
 import sqlite3
 
-from . import actions, ai, audit, config, kb
+from . import actions, ai, audit, config, kb, workspace
 from .db import get_setting, now_iso, row, rows
 from .integrations import create_issue, notify
 from .masking import mask
@@ -55,9 +55,13 @@ def _record(conn, case_id, action, params, why, outcome, rule, status, result=No
 def build_context(conn: sqlite3.Connection, case: dict) -> dict:
     snapshot = actions.account_snapshot(conn, case["doctor_id"])
     incidents = rows(conn, "SELECT title, doctors FROM incidents WHERE status = 'open'")
+    events = rows(conn, "SELECT ts, level, source, message FROM events WHERE account_id = ? "
+                        "ORDER BY ts DESC LIMIT 8", (case["doctor_id"],))
+    for e in events:
+        e["message"] = mask(e["message"]).text
     return {"channel": case["channel"], **snapshot,
             "term_edits_7d": actions.term_edits(conn, case["doctor_id"]),
-            "open_incidents": incidents}
+            "recent_events": events, "open_incidents": incidents}
 
 
 def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
@@ -73,13 +77,29 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
     for read in SYSTEM_READS:
         _record(conn, case_id, read, {}, "система збирає контекст", "auto", "P3: читання", "executed")
 
-    analysis = ai.analyze(conn, masked.text, context, kb.knowledge_text(conn))
+    ws = workspace.get(conn)
+    scriber = ws.get("connector") == "scriber"
+    knowledge = (kb.knowledge_text(conn) if scriber else "") + "\n" + ws.get("knowledge", "")
+    analysis = ai.analyze(conn, masked.text, context, knowledge, workspace.prompt_block(ws), ws.get("connector", "none"))
     if analysis["injection_suspected"] and "prompt_injection" not in flags:
         flags.append("prompt_injection")
+    route, route_why = workspace.match_route(ws, case["text"], analysis.get("route"))
+    owner = workspace.member(ws, route["owner"]) if route else None
+    analysis["route"] = {"id": route["id"], "title": route["title"], "mode": route["mode"], "why": route_why,
+                         "owner": owner} if route else None
+    analysis["risk_flags"] = flags
+    analysis["context"] = context
+    doctor = context.get("doctor") or {}
+    first_name = doctor.get("first_name")
+
+    wants_human = any(a["action"] == "escalate_to_human" for a in analysis["proposed_actions"])
+    if route and not flags and (route["mode"] == "human_only" or wants_human):
+        # No risk flags: "needs a human" means the owner from the template, not a P0 alarm.
+        return _hand_to_owner(conn, case, masked.text, analysis, route, owner, first_name)
+
     open_incident = row(conn, "SELECT id FROM incidents WHERE status = 'open' LIMIT 1")
     plan = [Proposed(a["action"], a["params"], a["why"]) for a in analysis["proposed_actions"]
             if not (a["action"] == "create_bug_ticket" and open_incident)]  # the incident already has a ticket
-    doctor = context.get("doctor") or {}
     ai_priority = analysis["priority"]
     if ai_priority == "P1" and open_incident:
         ai_priority = "P3"  # the incident case carries P1; this customer's own case is routine
@@ -88,46 +108,104 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
                          overage_usd=float((context.get("invoice") or {}).get("overage_usd") or 0),
                          recent_credit=bool(context.get("recent_credit")))
     priority, decisions = evaluate(plan, policy_ctx, autonomy(conn))
-    analysis["risk_flags"] = flags
-    analysis["context"] = context
 
     pending = []
     for d in decisions:
+        if route and route["mode"] == "ai_with_approval" and d.outcome == "auto" and d.action not in READ_ONLY:
+            d.outcome, d.rule = "approval", f"маршрут «{route['title']}»: AI готує, людина підтверджує"
+            d.approver = "agent"
         status = STATUS_BY_OUTCOME[d.outcome]
         result = _run(conn, case, d.action, d.params) if d.outcome == "auto" else None
         _record(conn, case_id, d.action, d.params, d.why, d.outcome, d.rule, status, result)
         if status == "pending":
             pending.append(CATALOG[d.action].title)
 
-    first_name = doctor.get("first_name")
     reply = (f"{first_name}, {HOLDING_REPLY[0].lower()}{HOLDING_REPLY[1:]}" if first_name else HOLDING_REPLY) \
         if priority == "P0" else analysis["reply_now"]
     if case["channel"] == "chat" and reply:
-        add_message(conn, case_id, "ai", reply)
+        if _send_or_hold(conn, case_id, reply, ws, analysis):
+            pending.append(CATALOG["send_reply"].title)
 
     status = ("escalated" if priority == "P0" else "waiting_approval" if pending
               else "waiting_client" if analysis["clarifying_question"] else "resolved")
-    ts = now_iso()
-    conn.execute("UPDATE cases SET masked_text = ?, analysis = ?, priority = ?, verdict = ?, status = ?, "
-                 "processed_at = ?, resolved_at = ? WHERE id = ?",
-                 (masked.text, json.dumps(analysis, ensure_ascii=False), priority, analysis["verdict"], status,
-                  ts, ts if status == "resolved" else None, case_id))
-    conn.commit()
-    audit.log(conn, "case_analyzed", {"priority": priority, "verdict": analysis["verdict"],
-                                      "engine": analysis.get("engine"), "confidence": analysis["confidence"]},
-              case_id)
+    _save(conn, case_id, masked.text, analysis, priority, status, route, owner)
 
+    lead = _lead(ws)
     if priority == "P0":
         reasons = ", ".join(FLAG_TITLES.get(f, f) for f in flags) or "AI позначив критичним"
-        notify(conn, "support", f"🔴 P0 · Кейс {case_id} · {reasons} · @Катерина, потрібна людина",
+        notify(conn, "support", f"🔴 P0 · Кейс {case_id} · {reasons} · {lead}, потрібна людина",
                case_link(case_id))
     elif pending:
         notify(conn, "support", f"🟠 P2 · Кейс {case_id} · {analysis['real_goal'][:90]} · "
                                 f"ризик відтоку: {analysis['churn_risk']} · підтвердити: {', '.join(pending)}",
                case_link(case_id))
-    if analysis["category"] == "stt_term_error" or context.get("term_edits_7d"):
+    if scriber and (analysis["category"] == "stt_term_error" or context.get("term_edits_7d")):
         check_term_incidents(conn, case_id)
     return analysis
+
+
+READ_ONLY = {"acknowledge", "lookup_account", "get_term_edits", "read_feature_docs", "explain_how_it_works",
+             "send_help_article", "escalate_to_human"}
+
+
+def _lead(ws: dict) -> str:
+    team = ws.get("team", [])
+    lead = next((m for m in team if "ескалац" in m.get("owns", "") or "P0" in m.get("owns", "")), team[0] if team else None)
+    return lead["handle"] if lead else "керівник підтримки"
+
+
+def _save(conn, case_id, masked_text, analysis, priority, status, route, owner) -> None:
+    ts = now_iso()
+    conn.execute("UPDATE cases SET masked_text = ?, analysis = ?, priority = ?, verdict = ?, status = ?, "
+                 "processed_at = ?, resolved_at = ?, route = ?, assigned_to = ? WHERE id = ?",
+                 (masked_text, json.dumps(analysis, ensure_ascii=False), priority, analysis["verdict"], status,
+                  ts, ts if status == "resolved" else None, route["id"] if route else None,
+                  owner["id"] if owner else None, case_id))
+    conn.commit()
+    audit.log(conn, "case_analyzed", {"priority": priority, "verdict": analysis["verdict"],
+                                      "route": route["id"] if route else None,
+                                      "engine": analysis.get("engine"), "confidence": analysis["confidence"]},
+              case_id)
+
+
+def _send_or_hold(conn, case_id: int, reply: str, ws: dict, analysis: dict) -> bool:
+    """Sends the reply unless it breaks the business tone rules; then it waits for a human.
+    Returns True when the reply was held back."""
+    issues = workspace.tone_issues(ws, reply)
+    analysis["tone_issues"] = issues
+    if not issues:
+        add_message(conn, case_id, "ai", reply)
+        return False
+    _record(conn, case_id, "send_reply", {"text": reply}, f"заборонені фрази: {', '.join(issues)}",
+            "approval", "тон: відповідь не пройшла перевірку, потрібна людина", "pending")
+    return True
+
+
+def _hand_to_owner(conn, case: dict, masked_text: str, analysis: dict, route: dict, owner: dict | None,
+                   first_name: str | None) -> dict:
+    """Human-only routes: the assistant never solves these, it hands them over with a warm reply."""
+    case_id = case["id"]
+    who = f"{owner['name']} ({owner['role'].lower()})" if owner else "відповідальна людина"
+    _record(conn, case_id, "assign_to_owner", {"owner": owner["name"] if owner else None, "route": route["title"]},
+            route_reason(analysis), "auto", f"маршрут «{route['title']}»: тільки людина (100%)", "executed",
+            {"done": f"передано: {who}"})
+    hello = f"{first_name}, дякуємо" if first_name else "Дякуємо"
+    reply = (f"{hello} за звернення! Питання «{route['title'].lower()}» веде {who}. "
+             f"Ми вже передали все, що ви написали, тож повторювати нічого не потрібно: "
+             f"{owner['name'] if owner else 'колега'} відповість вам особисто.")
+    if case["channel"] == "chat":
+        add_message(conn, case_id, "ai", reply)
+    analysis["reply_now"] = reply
+    analysis["tone_issues"] = []
+    _save(conn, case_id, masked_text, analysis, route.get("priority", "P2"), "assigned", route, owner)
+    notify(conn, "support", f"👤 Кейс {case_id} · {route['title']} → {owner['handle'] if owner else '—'} · "
+                            f"тільки людина · {analysis['route']['why']}", case_link(case_id))
+    return analysis
+
+
+def route_reason(analysis: dict) -> str:
+    r = analysis.get("route") or {}
+    return f"правило маршрутизації ({r.get('why', '')})"
 
 
 def _run(conn: sqlite3.Connection, case: dict, action: str, params: dict) -> dict:
@@ -144,7 +222,9 @@ def _finish_if_done(conn: sqlite3.Connection, case_id: int) -> None:
     case = row(conn, "SELECT * FROM cases WHERE id = ?", (case_id,))
     analysis = json.loads(case["analysis"] or "{}")
     if case["channel"] == "chat" and analysis.get("reply_after_approval"):
-        add_message(conn, case_id, "ai", analysis["reply_after_approval"])
+        if _send_or_hold(conn, case_id, analysis.pop("reply_after_approval"), workspace.get(conn), analysis):
+            return
+        conn.execute("UPDATE cases SET analysis = ? WHERE id = ?", (json.dumps(analysis, ensure_ascii=False), case_id))
     if case["status"] == "waiting_approval":
         conn.execute("UPDATE cases SET status = 'resolved', resolved_at = ? WHERE id = ?", (now_iso(), case_id))
         conn.commit()

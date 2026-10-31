@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer Care · Налаштування</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="hdr"></div>
+<div class="grid">
+  <div class="card span4">
+    <div class="row" style="justify-content: space-between; flex-wrap: wrap">
+      <div><h3 style="margin: 0">Шаблон бізнесу</h3>
+        <div class="small muted">Той самий агент працює для будь-якого бізнесу: опишіть продукт, команду, правила маршрутизації й тон.</div></div>
+      <div class="row">
+        <select id="preset" style="width: auto"></select><button id="applyPreset">Застосувати пресет</button>
+        <label class="pill" style="cursor: pointer">Завантажити JSON<input type="file" id="upload" accept=".json" hidden></label>
+        <button id="download">Завантажити поточний</button>
+      </div>
+    </div>
+  </div>
+  <div class="card span2 stack">
+    <h3>1. Про бізнес</h3>
+    <label>Назва <input type="text" id="b_name"></label>
+    <label>Що продаєте <textarea id="b_product" rows="3"></textarea></label>
+    <label>Хто клієнти <textarea id="b_customers" rows="2"></textarea></label>
+    <div class="row"><label style="flex: 1">Звертання <input type="text" id="b_address"></label>
+      <label style="flex: 1">Мова <input type="text" id="b_language"></label></div>
+  </div>
+  <div class="card span2 stack">
+    <h3>5. Тон і емпатія</h3>
+    <label>Структура кожної відповіді <input type="text" id="t_structure"></label>
+    <label>Правила (по одному в рядку) <textarea id="t_rules" rows="4"></textarea></label>
+    <label>Заборонені фрази (по одній у рядку): відповідь з ними не піде клієнту без людини <textarea id="t_forbidden" rows="3"></textarea></label>
+    <label>Додаткові інструкції <textarea id="instructions" rows="3"></textarea></label>
+  </div>
+  <div class="card span4">
+    <h3>2. Команда</h3>
+    <table id="team"></table>
+    <button id="addMember" style="margin-top: 8px">+ Людина</button>
+  </div>
+  <div class="card span4">
+    <h3>3. Правила маршрутизації</h3>
+    <div class="small muted" style="margin-bottom: 8px">Слова-тригери перевіряє код, тож правило «тільки людина» спрацьовує на 100%, навіть якщо AI помилився з типом звернення.</div>
+    <table id="routes"></table>
+    <button id="addRoute" style="margin-top: 8px">+ Правило</button>
+  </div>
+  <div class="card span4 stack">
+    <h3>4. База знань</h3>
+    <div class="small muted" id="kbNote"></div>
+    <textarea id="knowledge" rows="8" placeholder="FAQ, відомі проблеми, політики: ### ID · Назва, далі пункти"></textarea>
+  </div>
+  <div class="card span4 row">
+    <button class="primary" id="save">Зберегти шаблон</button><span id="msg" class="small"></span>
+  </div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+document.getElementById("hdr").innerHTML = header("settings");
+let ws = null, modes = {};
+const $ = (id) => document.getElementById(id);
+const lines = (s) => s.split("\n").map((x) => x.trim()).filter(Boolean);
+
+function render() {
+  $("b_name").value = ws.business.name; $("b_product").value = ws.business.product;
+  $("b_customers").value = ws.business.customers; $("b_address").value = ws.business.address;
+  $("b_language").value = ws.business.language;
+  $("t_structure").value = ws.tone.structure || ""; $("t_rules").value = (ws.tone.rules || []).join("\n");
+  $("t_forbidden").value = (ws.tone.forbidden || []).join("\n"); $("instructions").value = ws.instructions || "";
+  $("knowledge").value = ws.knowledge || "";
+  $("kbNote").textContent = ws.connector === "scriber"
+    ? "Для Scriber основна база знань лежить у docs/features (4 фічі, відомі випадки). Тут можна дописати додаткові тексти."
+    : "Вставте FAQ і відомі проблеми. AI ставить вердикт «не баг» лише коли випадок описаний тут.";
+  $("team").innerHTML = `<tr><th>id</th><th>Ім'я</th><th>Роль</th><th>Контакт</th><th>За що відповідає</th></tr>` +
+    ws.team.map((m, i) => `<tr>${["id", "name", "role", "handle", "owns"].map((k) =>
+      `<td><input type="text" data-team="${i}" data-k="${k}" value="${esc(m[k])}"></td>`).join("")}</tr>`).join("");
+  const owners = ws.team.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
+  $("routes").innerHTML = `<tr><th>Тип звернення</th><th>Слова-тригери (через кому)</th><th>Кому</th><th>Режим</th><th>Пріоритет</th></tr>` +
+    ws.routes.map((r, i) => `<tr>
+      <td><input type="text" data-route="${i}" data-k="title" value="${esc(r.title)}"></td>
+      <td><input type="text" data-route="${i}" data-k="keywords" value="${esc((r.keywords || []).join(", "))}"></td>
+      <td><select data-route="${i}" data-k="owner">${owners}</select></td>
+      <td><select data-route="${i}" data-k="mode">${Object.entries(modes).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></td>
+      <td><select data-route="${i}" data-k="priority">${["P0", "P1", "P2", "P3"].map((p) => `<option>${p}</option>`).join("")}</select></td></tr>`).join("");
+  ws.routes.forEach((r, i) => ["owner", "mode", "priority"].forEach((k) => {
+    document.querySelector(`[data-route="${i}"][data-k="${k}"]`).value = r[k] || "P2";
+  }));
+}
+
+function collect() {
+  ws.business = { name: $("b_name").value, product: $("b_product").value, customers: $("b_customers").value,
+    address: $("b_address").value, language: $("b_language").value };
+  ws.tone = { structure: $("t_structure").value, rules: lines($("t_rules").value), forbidden: lines($("t_forbidden").value) };
+  ws.instructions = $("instructions").value; ws.knowledge = $("knowledge").value;
+  document.querySelectorAll("[data-team]").forEach((el) => { ws.team[+el.dataset.team][el.dataset.k] = el.value.trim(); });
+  document.querySelectorAll("[data-route]").forEach((el) => {
+    const r = ws.routes[+el.dataset.route];
+    r[el.dataset.k] = el.dataset.k === "keywords" ? el.value.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean) : el.value;
+  });
+  ws.routes.forEach((r) => { if (!r.id) r.id = r.title.toLowerCase().replace(/[^a-zа-яіїєґ0-9]+/gi, "-").slice(0, 30) || `route-${Date.now()}`; });
+  return ws;
+}
+
+async function load() {
+  const data = await api("/api/workspace");
+  ws = data.workspace; modes = data.modes;
+  $("preset").innerHTML = data.presets.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  $("preset").value = ws.preset || data.presets[0].id;
+  render(); renderStatus();
+}
+
+$("addMember").onclick = () => { collect(); ws.team.push({ id: `person-${ws.team.length + 1}`, name: "", role: "", handle: "", owns: "" }); render(); };
+$("addRoute").onclick = () => { collect(); ws.routes.push({ id: "", title: "Новий тип", keywords: [], owner: ws.team[0].id, mode: "human_only", priority: "P2" }); render(); };
+$("applyPreset").onclick = async () => { await api(`/api/workspace/preset/${$("preset").value}`, {}); $("msg").textContent = "Пресет застосовано"; load(); };
+$("save").onclick = async () => {
+  try { await api("/api/workspace", collect()); $("msg").textContent = "Збережено. Наступні звернення обробляються за новим шаблоном."; renderStatus(); }
+  catch (e) { $("msg").textContent = "Не збережено: перевірте, що кожне правило має відповідального з команди."; }
+};
+$("download").onclick = () => {
+  const blob = new Blob([JSON.stringify(collect(), null, 2)], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${ws.preset || "business"}.json`; a.click();
+};
+$("upload").onchange = async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  try { await api("/api/workspace", JSON.parse(await file.text())); $("msg").textContent = `Шаблон «${file.name}» завантажено`; load(); }
+  catch (err) { $("msg").textContent = "Файл не підходить: перевірте структуру за presets/_template.json"; }
+};
+load();
+</script>
+</body>
+</html>

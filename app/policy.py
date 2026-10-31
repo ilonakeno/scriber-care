@@ -40,6 +40,8 @@ CATALOG: dict[str, ActionSpec] = {
     "create_bug_ticket": ActionSpec("P1", "Створити баг-тікет"),
     "add_term_global_dictionary": ActionSpec("P1", "Додати термін у загальний словник", approver="dev"),
     "escalate_to_human": ActionSpec("P0", "Передати людині"),
+    "assign_to_owner": ActionSpec("P3", "Передати відповідальному за правилом маршрутизації"),
+    "send_reply": ActionSpec("P2", "Надіслати відповідь (не пройшла перевірку тону)", approver="agent"),
 }
 
 ALWAYS_ALLOWED_IN_P0 = {"acknowledge", "escalate_to_human", "lookup_account", "read_feature_docs"}

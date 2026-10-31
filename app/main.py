@@ -1,20 +1,40 @@
 """HTTP API and static UI. Run: uvicorn app.main:app --reload"""
+import base64
 import json
+import secrets
 from dataclasses import asdict
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import audit, config, metrics, reviews, seed, support
+from . import audit, config, metrics, reviews, seed, support, workspace
 from .db import connect, get_setting, row, rows, set_setting
 from .integrations import notify
 from .policy import CATALOG
 
-app = FastAPI(title="Scriber Care")
+app = FastAPI(title="Customer Care")
 STATIC = config.ROOT / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    """Optional password for public deployments: set BASIC_AUTH_USER and BASIC_AUTH_PASSWORD."""
+    if config.BASIC_AUTH_USER and config.BASIC_AUTH_PASSWORD:
+        header = request.headers.get("authorization", "")
+        ok = False
+        if header.startswith("Basic "):
+            try:
+                user, _, password = base64.b64decode(header[6:]).decode().partition(":")
+                ok = secrets.compare_digest(user, config.BASIC_AUTH_USER) and \
+                    secrets.compare_digest(password, config.BASIC_AUTH_PASSWORD)
+            except (ValueError, UnicodeDecodeError):
+                ok = False
+        if not ok:
+            return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Customer Care"'})
+    return await call_next(request)
 
 
 def db():
@@ -46,8 +66,38 @@ def dashboard_page():
     return FileResponse(STATIC / "dashboard.html")
 
 
+@app.get("/settings")
+def settings_page():
+    return FileResponse(STATIC / "settings.html")
+
+
+@app.get("/api/workspace")
+def get_workspace(conn=Depends(db)):
+    return {"workspace": workspace.get(conn), "presets": workspace.presets(), "modes": workspace.MODES}
+
+
+@app.post("/api/workspace")
+def save_workspace(body: dict, conn=Depends(db)):
+    try:
+        saved = workspace.save(conn, body)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(400, f"Шаблон не збережено: {exc}")
+    audit.log(conn, "workspace_saved", {"business": saved.get("business", {}).get("name")})
+    return saved
+
+
+@app.post("/api/workspace/preset/{preset_id}")
+def apply_preset(preset_id: str, conn=Depends(db)):
+    try:
+        ws = workspace.load_preset(preset_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    audit.log(conn, "workspace_preset", {"preset": preset_id})
+    return workspace.save(conn, ws)
+
+
 class ChatIn(BaseModel):
-    doctor_id: str
+    doctor_id: str | None = None
     text: str
 
 
@@ -78,7 +128,9 @@ def _case_view(conn, case: dict) -> dict:
         a["params"] = json.loads(a["params"] or "{}")
         a["result"] = json.loads(a["result"] or "{}")
         a["title"] = CATALOG[a["action"]].title if a["action"] in CATALOG else a["action"]
-    return {**case, "analysis": json.loads(case["analysis"] or "{}"), "doctor": doctor, "actions": acts,
+    events = rows(conn, "SELECT ts, level, source, message FROM events WHERE account_id = ? ORDER BY ts DESC LIMIT 5",
+                  (case["doctor_id"],))
+    return {**case, "analysis": json.loads(case["analysis"] or "{}"), "doctor": doctor, "actions": acts, "events": events,
             "messages": rows(conn, "SELECT * FROM messages WHERE case_id = ? ORDER BY id", (case["id"],)),
             "review": row(conn, "SELECT * FROM reviews WHERE id = ?", (case["review_id"],)),
             "incident": row(conn, "SELECT * FROM incidents WHERE id = ?", (case["incident_id"],)),
@@ -143,13 +195,15 @@ def reject(action_id: int, body: WhoIn, conn=Depends(db)):
 
 @app.get("/api/doctors")
 def doctors(conn=Depends(db)):
+    if workspace.get(conn).get("connector") != "scriber":
+        return []  # other businesses have no simulated accounts: customers write as guests
     return rows(conn, "SELECT d.id, d.name, d.specialty, d.plan, c.name AS clinic FROM doctors d "
                       "LEFT JOIN clinics c ON c.id = d.clinic_id ORDER BY d.id")
 
 
 @app.post("/api/chat")
 def chat(body: ChatIn, conn=Depends(db)):
-    case_id = support.create_case(conn, body.doctor_id, body.text)
+    case_id = support.create_case(conn, body.doctor_id or None, body.text)
     support.process_case(conn, case_id)
     return {"case_id": case_id}
 
@@ -227,6 +281,7 @@ def audit_log(conn=Depends(db)):
 @app.get("/api/status")
 def status(conn=Depends(db)):
     return {"llm_model": config.LLM_MODEL.split(",")[0].strip() if config.GEMINI_API_KEY else None,
+            "business": workspace.get(conn)["business"]["name"],
             "slack": bool(config.SLACK_WEBHOOK_SUPPORT), "github_repo": config.GITHUB_REPO or None,
             "manual_minutes_per_case": get_setting(conn, "manual_minutes_per_case", 8)}
 

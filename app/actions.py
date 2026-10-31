@@ -61,6 +61,10 @@ def execute(conn: sqlite3.Connection, case: dict, action: str, params: dict) -> 
         return {"done": "відповідь опубліковано (симуляція майданчика)"}
     if action == "escalate_to_human":
         return {"done": "передано людині"}
+    if action == "send_reply":
+        conn.execute("INSERT INTO messages (case_id, sender, text, ts) VALUES (?, 'ai', ?, ?)",
+                     (case["id"], params.get("text"), ts))
+        return {"done": "відповідь надіслано після перевірки людиною"}
     if action == "notify_affected":
         doctors = params.get("doctors") or []
         for doctor_id in doctors:

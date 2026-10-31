@@ -2,7 +2,7 @@
 <html lang="uk">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Scriber Care · Панель агента</title>
+<title>Customer Care · Панель агента</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -109,6 +109,12 @@ async function openCase(id) {
       ${a.clarifying_question ? `<div class="small" style="margin-top: 6px"><b>Одне уточнення:</b> ${esc(a.clarifying_question)}</div>` : ""}
       ${reads.length ? `<div class="small muted" style="margin-top: 6px">Контекст зібрано автоматично: ${reads.map((r) => esc(r.title)).join(" · ")}</div>` : ""}
     </div>` : ""}
+    ${a.route ? `<div class="card"><h3>Маршрут за шаблоном бізнесу</h3>
+      <div><b>${esc(a.route.title)}</b> → ${a.route.owner ? `<b>${esc(a.route.owner.name)}</b> (${esc(a.route.owner.role)}, ${esc(a.route.owner.handle)})` : "—"}</div>
+      <div style="margin-top: 6px"><span class="chip ${a.route.mode === "human_only" ? "warn" : ""}">${{ ai: "AI вирішує сам", ai_with_approval: "AI готує, людина підтверджує", human_only: "Тільки людина (100%)" }[a.route.mode]}</span>
+      <span class="chip">${esc(a.route.why)}</span></div></div>` : ""}
+    ${a.tone_issues !== undefined ? `<div class="small">${a.tone_issues.length ? `<span class="chip bad">Тон: заборонені фрази (${a.tone_issues.map(esc).join(", ")}), відповідь чекає людину</span>` : '<span class="chip good">Тон перевірено: емпатія, без заборонених фраз</span>'}</div>` : ""}
+    ${(c.events || []).length ? `<div class="card"><h3>Логи клієнта, які бачив AI</h3>${c.events.map((e) => `<div class="small"><span class="mono muted">${e.ts.slice(11, 16)} · ${esc(e.source)}</span> <span class="chip ${e.level === "error" ? "bad" : e.level === "warn" ? "warn" : ""}">${esc(e.level)}</span> ${esc(e.message)}</div>`).join("")}</div>` : ""}
     ${candidate ? `<div class="card"><h3>Хто автор відгуку</h3>
       <div><b>${esc(candidate.name)}</b> · збіг ${Math.round(candidate.confidence * 100)}% · <span class="small muted">${candidate.reasons.map(esc).join(", ")}</span></div>
       ${c.doctor ? '<div class="small" style="margin-top: 6px">✓ Підтверджено людиною</div>' :

@@ -33,7 +33,10 @@ CREATE TABLE IF NOT EXISTS credits (
 CREATE TABLE IF NOT EXISTS cases (
     id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, doctor_id TEXT, review_id INTEGER,
     text TEXT, masked_text TEXT, created_at TEXT, status TEXT, priority TEXT, verdict TEXT,
-    analysis TEXT, processed_at TEXT, resolved_at TEXT, incident_id INTEGER
+    analysis TEXT, processed_at TEXT, resolved_at TEXT, incident_id INTEGER, route TEXT, assigned_to TEXT
+);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT, ts TEXT, level TEXT, source TEXT, message TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER, sender TEXT, text TEXT, ts TEXT

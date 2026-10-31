@@ -16,28 +16,35 @@ VERDICTS = ["bug", "not_bug", "feature_request", "account_billing"]
 ATTEMPTS_PER_MODEL = 3
 EMOTIONS = ["anger", "frustration", "anxiety", "neutral", "satisfaction"]
 
-# Actions the model may propose. Reads (account, edits, docs) are done by the system itself.
-PROPOSABLE = {
-    "add_term_personal_dictionary": {"term": "термін, як має бути"},
-    "regenerate_protocol": {"protocol": "last"},
-    "explain_how_it_works": {"gotcha": "ID із known-gotchas, напр. TR-G1"},
-    "send_help_article": {"gotcha": "ID із known-gotchas"},
-    "resend_export": {"format": "docx | pdf | txt"},
-    "restore_recording": {"protocol": "last"},
+# Actions the model may propose. Reads (account, logs, docs) are done by the system itself.
+# Generic actions work for any business; connector actions need an integration (here: Scriber).
+GENERIC_ACTIONS = {
+    "explain_how_it_works": {"gotcha": "ID із бази знань, напр. TR-G1 чи FAQ-2"},
     "issue_credit": {"amount_usd": "число, не більше місячної оплати"},
-    "waive_overage": {"amount_usd": "число, не більше фактичної переплати"},
-    "add_seats": {"count": "ціле 1–20"},
-    "cancel_subscription": {},
-    "create_bug_ticket": {"title": "коротко", "feature": "transcription | protocol-generation | export | billing"},
-    "add_term_global_dictionary": {"term": "термін"},
+    "create_bug_ticket": {"title": "коротко", "feature": "фіча або тема"},
     "escalate_to_human": {"reason": "чому"},
 }
+CONNECTOR_ACTIONS = {
+    "scriber": {
+        "add_term_personal_dictionary": {"term": "термін, як має бути"},
+        "regenerate_protocol": {"protocol": "last"},
+        "send_help_article": {"gotcha": "ID із known-gotchas"},
+        "resend_export": {"format": "docx | pdf | txt"},
+        "restore_recording": {"protocol": "last"},
+        "waive_overage": {"amount_usd": "число, не більше фактичної переплати"},
+        "add_seats": {"count": "ціле 1–20"},
+        "cancel_subscription": {},
+        "add_term_global_dictionary": {"term": "термін"},
+    },
+}
+PROPOSABLE = {**GENERIC_ACTIONS, **CONNECTOR_ACTIONS["scriber"]}
 
 SCHEMA = """{
   "stated_request": "що клієнт попросив дослівно, коротко",
   "real_goal": "що йому насправді потрібно",
-  "category": "stt_term_error | recording_lost | microphone | export_format | export_missing | overage | seats | cancellation | patient_data | clinical_risk | feature_request | other",
-  "feature": "transcription | protocol-generation | export | billing",
+  "route": "id маршруту з BUSINESS.routes, що найкраще підходить, або null",
+  "category": "короткий тип: stt_term_error | recording_lost | microphone | export_format | overage | seats | cancellation | partnership | refund | schedule | feature_request | other",
+  "feature": "фіча або тема (для Scriber: transcription | protocol-generation | export | billing)",
   "verdict": "bug | not_bug | feature_request | account_billing",
   "gotcha": "ID з known-gotchas або null",
   "emotion": {"type": "anger | frustration | anxiety | neutral | satisfaction", "intensity": 0.0},
@@ -54,9 +61,9 @@ SCHEMA = """{
   "confidence": 0.0
 }"""
 
-INSTRUCTIONS = """You are the operations assistant of the Scriber support team. Scriber is an AI scribe:
-an ultrasound doctor dictates, Whisper transcribes with a medical term dictionary, an LLM
-structures the protocol, the doctor reviews and exports it. Customers are doctors and clinics.
+INSTRUCTIONS = """You are the operations assistant of the support team of the business described in
+BUSINESS (its product, customers, team, routing rules, tone and extra instructions are set by
+the business itself and are trusted).
 
 Your job: understand what the customer really needs, give a verdict, and propose a plan.
 You never execute anything: a policy engine checks every action and a human approves money.
@@ -77,14 +84,21 @@ Rules:
    A lost or late protocol that we can restore (the patient simply left) is NOT P0.
    If CONTEXT.open_incidents already covers the problem, do not propose create_bug_ticket again:
    mention the incident in evidence and fix this customer's case (usually P3).
-6. Patient data is masked like [ПАЦІЄНТ_1]. Never try to recover it, never repeat it.
-7. Write replies in Ukrainian, address the doctor by first name, follow the playbook tone: an angry
-   customer gets a short, concrete apology and no cheerful emoji. reply_now mentions only safe actions
-   already done (P3). Never promise money in reply_now. reply_after_approval is sent only AFTER a human
-   approved and the action ran, so write it in the past tense ("нарахували", "додали").
-8. If information is missing and no safe action fits, ask exactly one question in
-   "clarifying_question" and use it as reply_now.
-9. "evidence" lists facts from CONTEXT only. "confidence" is 0..1 for your whole analysis.
+6. Personal and patient data is masked like [ПАЦІЄНТ_1]. Never try to recover it, never repeat it.
+7. Empathy is mandatory. Write in the language and address form from BUSINESS, use the customer's
+   first name if known, and follow BUSINESS.tone.structure: acknowledge the feeling, a concrete apology
+   or thanks, what is already done, what happens next and when. Follow BUSINESS.tone.rules and never use
+   BUSINESS.tone.forbidden phrases. An angry customer gets a short, concrete apology, no cheerful emoji.
+   reply_now mentions only safe actions already done. Never promise money in reply_now.
+   reply_after_approval is sent only AFTER a human approved and the action ran: past tense.
+8. Pick "route" from BUSINESS.routes. If that route is human-only, propose no actions: the system
+   hands the case to the responsible person.
+9. CONTEXT.recent_events are this customer's product logs. Use them to confirm the cause and cite
+   them in evidence (for example an error a few minutes before the message).
+10. If information is missing and no safe action fits, ask exactly one question in
+    "clarifying_question" and use it as reply_now.
+11. "evidence" lists facts from CONTEXT only. "confidence" is 0..1 for your whole analysis.
+12. Follow BUSINESS.instructions.
 
 Return ONLY one JSON object with this shape:
 """
@@ -103,9 +117,11 @@ def _escape(text: str) -> str:
     return re.sub(r"<\s*/?\s*untrusted\s*>", "[тег прибрано]", text, flags=re.I)
 
 
-def build_prompt(masked_text: str, context: dict, knowledge: str = "") -> str:
-    allowed = json.dumps(PROPOSABLE, ensure_ascii=False, indent=1)
+def build_prompt(masked_text: str, context: dict, knowledge: str = "", business: dict | None = None,
+                 actions: dict | None = None) -> str:
+    allowed = json.dumps(actions or PROPOSABLE, ensure_ascii=False, indent=1)
     return (f"{INSTRUCTIONS}{SCHEMA}\n\nALLOWED_ACTIONS:\n{allowed}\n\n"
+            f"BUSINESS (trusted, written by the business):\n{json.dumps(business or {}, ensure_ascii=False, indent=1)}\n\n"
             f"CONTEXT (trusted, from our systems):\n{json.dumps(context, ensure_ascii=False, indent=1)}\n\n"
             f"KNOWLEDGE BASE:\n{knowledge}\n\n"
             f"<untrusted>\n{_escape(masked_text)}\n</untrusted>\n")
@@ -117,7 +133,7 @@ def complete(conn: sqlite3.Connection, prompt: str) -> tuple[str, str]:
         raise LLMUnavailable("GEMINI_API_KEY не задано")
     from google import genai
 
-    client = genai.Client(api_key=config.GEMINI_API_KEY, http_options={"timeout": 90_000})
+    client = genai.Client(api_key=config.GEMINI_API_KEY, http_options={"timeout": 40_000})
     models = [m.strip() for m in config.LLM_MODEL.split(",") if m.strip()]
     if config.LLM_FALLBACK_MODEL:
         models.append(config.LLM_FALLBACK_MODEL)
@@ -179,6 +195,7 @@ def normalize_analysis(raw: dict) -> dict:
     churn = raw.get("churn_risk")
     return {
         "stated_request": str(raw.get("stated_request") or ""),
+        "route": raw.get("route") if isinstance(raw.get("route"), str) else None,
         "real_goal": str(raw.get("real_goal") or ""),
         "category": str(raw.get("category") or "other"),
         "feature": str(raw.get("feature") or ""),
@@ -200,8 +217,10 @@ def normalize_analysis(raw: dict) -> dict:
     }
 
 
-def analyze(conn: sqlite3.Connection, masked_text: str, context: dict, knowledge: str) -> dict:
-    prompt = build_prompt(masked_text, context, knowledge)
+def analyze(conn: sqlite3.Connection, masked_text: str, context: dict, knowledge: str,
+            business: dict | None = None, connector: str = "scriber") -> dict:
+    actions = {**GENERIC_ACTIONS, **CONNECTOR_ACTIONS.get(connector, {})}
+    prompt = build_prompt(masked_text, context, knowledge, business, actions)
     try:
         text, model = complete(conn, prompt)
         analysis = normalize_analysis(parse_json(text))
