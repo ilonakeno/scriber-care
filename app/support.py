@@ -76,7 +76,9 @@ def process_case(conn: sqlite3.Connection, case_id: int) -> dict:
     analysis = ai.analyze(conn, masked.text, context, kb.knowledge_text(conn))
     if analysis["injection_suspected"] and "prompt_injection" not in flags:
         flags.append("prompt_injection")
-    plan = [Proposed(a["action"], a["params"], a["why"]) for a in analysis["proposed_actions"]]
+    open_incident = row(conn, "SELECT id FROM incidents WHERE status = 'open' LIMIT 1")
+    plan = [Proposed(a["action"], a["params"], a["why"]) for a in analysis["proposed_actions"]
+            if not (a["action"] == "create_bug_ticket" and open_incident)]  # the incident already has a ticket
     doctor = context.get("doctor") or {}
     policy_ctx = Context(confidence=analysis["confidence"], ai_priority=analysis["priority"], risk_flags=flags,
                          account_monthly_usd=float(doctor.get("monthly_usd") or 0),

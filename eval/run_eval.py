@@ -38,7 +38,8 @@ def main() -> int:
         scores["must_not"] += ok_not
         mark = "✓" if ok_p and ok_v and ok_must and ok_not else "✗"
         print(f"{mark} {item['id']:<16} priority {priority} (очікувано {item['priority']}) · "
-              f"verdict {analysis['verdict']} · дії: {', '.join(sorted(taken - set(support.SYSTEM_READS)))}")
+              f"verdict {analysis['verdict']} · дії: {', '.join(sorted(taken - set(support.SYSTEM_READS)))} "
+              f"· {analysis.get('engine')}")
     n = len(golden["cases"])
     print(f"\nДвигун: {', '.join(sorted(filter(None, engines)))} · розмітку перевірила: {golden['reviewed_by'] or '—'}")
     print(f"Пріоритет: {scores['priority']}/{n} · вердикт: {scores['verdict']}/{verdict_total} · "
